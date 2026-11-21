@@ -184,3 +184,42 @@ def test_resolve_hint_all_paths(http, hint):
 def test_resolve_hint_empty(http):
     with pytest.raises(ActResolutionError, match="Pusta"):
         resolve_hint(" \u200b ", http)
+
+
+@respx.mock
+def test_search_by_title_ignores_only_amendments_and_notices(http):
+    _mock_search([item for item in CONSUMER_RIGHTS_SEARCH if item["ELI"] != "DU/2014/827"])
+
+    with pytest.raises(ActResolutionError, match="Nie znaleziono"):
+        search_by_title("ustawa o prawach konsumenta", http)
+
+
+@respx.mock
+def test_search_by_title_network_error(http):
+    respx.get(f"{BASE_URL}/acts/search").mock(side_effect=httpx.ConnectError("connection refused"))
+
+    with pytest.raises(ActResolutionError, match="nie powiodło się"):
+        search_by_title("Kodeks cywilny", http)
+
+
+@respx.mock
+@pytest.mark.parametrize("hint", ["Dz.U. z 2014 r.", "DU/14/827", "ustawa o czymś nieistniejącym"])
+def test_resolve_hint_falls_through_to_title_search_and_fails(http, hint):
+    route = _mock_search([])
+
+    with pytest.raises(ActResolutionError, match="Nie znaleziono"):
+        resolve_hint(hint, http)
+    assert route.called
+
+
+@respx.mock
+def test_resolve_hint_normalizes_before_parsing(http):
+    route = _mock_search([])
+
+    assert resolve_hint("Dz.U. z 2014 r. poz. 827", http).key == "DU/2014/827"
+    assert not route.called
+
+
+@respx.mock
+def test_resolve_hint_prefers_eli_key_over_signature(http):
+    assert resolve_hint("DU/2014/827 (Dz.U. z 2023 r. poz. 2759)", http).key == "DU/2014/827"
