@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -6,7 +7,7 @@ import pytest
 import respx
 
 from legal_checker.config import Settings
-from legal_checker.eli_client import ActMetadata, EliClient, EliClientError, TextSource
+from legal_checker.eli_client import ActCache, ActMetadata, EliClient, EliClientError, TextSource
 from legal_checker.models import EliRef
 
 # Mocked host: ".test" is reserved (RFC 2606), so these tests never reach the real ELI API.
@@ -180,3 +181,87 @@ def test_download_text_not_found(client):
 
     with pytest.raises(EliClientError, match="Nie znaleziono"):
         client.download_text(TextSource(eli="DU/2014/827", kind="unified_pdf", path=path))
+
+
+UNIFIED_PDF_PATH = "/acts/DU/2014/827/text/U/D20140827Lj.pdf"
+PDF_BYTES = b"%PDF-1.7 fake unified text"
+
+
+def _mock_consumer_rights_act(metadata_json: dict) -> tuple[respx.Route, respx.Route]:
+    meta_route = respx.get(f"{BASE_URL}/acts/DU/2014/827").respond(json=metadata_json)
+    pdf_route = respx.get(f"{BASE_URL}{UNIFIED_PDF_PATH}").respond(
+        content=PDF_BYTES, headers={"content-type": "application/pdf"}
+    )
+    return meta_route, pdf_route
+
+
+@respx.mock
+def test_fetch_act_without_cache(client, metadata_json):
+    meta_route, pdf_route = _mock_consumer_rights_act(metadata_json)
+
+    act = client.fetch_act(CONSUMER_RIGHTS)
+    client.fetch_act(CONSUMER_RIGHTS)
+
+    assert act.metadata.eli == "DU/2014/827"
+    assert act.content.data == PDF_BYTES
+    assert act.content.url == f"{BASE_URL}{UNIFIED_PDF_PATH}"
+    assert act.fetched_at.date() == datetime.now(UTC).date()
+    assert meta_route.call_count == pdf_route.call_count == 2
+
+
+@respx.mock
+def test_fetch_act_cached_in_memory_and_on_disk(tmp_path, metadata_json):
+    meta_route, pdf_route = _mock_consumer_rights_act(metadata_json)
+
+    with EliClient(BASE_URL, cache=ActCache(tmp_path)) as eli:
+        first = eli.fetch_act(CONSUMER_RIGHTS)
+        assert eli.fetch_act(CONSUMER_RIGHTS) is first  # RAM hit
+
+    entry = tmp_path / "eli" / "DU_2014_827"
+    assert (entry / "content.pdf").read_bytes() == PDF_BYTES
+    assert json.loads((entry / "act.json").read_text(encoding="utf-8"))["metadata"]["ELI"] == "DU/2014/827"
+
+    with EliClient(BASE_URL, cache=ActCache(tmp_path)) as eli:  # fresh RAM, same directory
+        from_disk = eli.fetch_act(CONSUMER_RIGHTS)
+
+    assert from_disk == first
+    assert meta_route.call_count == pdf_route.call_count == 1
+
+
+@respx.mock
+def test_fetch_act_refetches_expired_entry(tmp_path, metadata_json):
+    meta_route, pdf_route = _mock_consumer_rights_act(metadata_json)
+    with EliClient(BASE_URL, cache=ActCache(tmp_path)) as eli:
+        stale = eli.fetch_act(CONSUMER_RIGHTS).model_copy(update={"fetched_at": datetime.now(UTC) - timedelta(days=2)})
+        eli.cache.put(CONSUMER_RIGHTS, stale)
+
+    with EliClient(BASE_URL, cache=ActCache(tmp_path)) as eli:
+        assert eli.fetch_act(CONSUMER_RIGHTS).fetched_at > stale.fetched_at
+    with EliClient(BASE_URL, cache=ActCache(tmp_path, max_age=None)) as eli:
+        eli.cache.put(CONSUMER_RIGHTS, stale)
+        assert eli.fetch_act(CONSUMER_RIGHTS) == stale  # never expires
+
+    assert meta_route.call_count == pdf_route.call_count == 2
+
+
+@respx.mock
+@pytest.mark.parametrize("damage", ["corrupt_json", "missing_content"])
+def test_fetch_act_ignores_damaged_cache_entry(tmp_path, metadata_json, damage):
+    meta_route, _ = _mock_consumer_rights_act(metadata_json)
+    with EliClient(BASE_URL, cache=ActCache(tmp_path)) as eli:
+        eli.fetch_act(CONSUMER_RIGHTS)
+    entry = tmp_path / "eli" / "DU_2014_827"
+    if damage == "corrupt_json":
+        (entry / "act.json").write_text("{not json", encoding="utf-8")
+    else:
+        (entry / "content.pdf").unlink()
+
+    with EliClient(BASE_URL, cache=ActCache(tmp_path)) as eli:
+        assert eli.fetch_act(CONSUMER_RIGHTS).content.data == PDF_BYTES
+
+    assert meta_route.call_count == 2
+
+
+def test_from_settings_enables_cache_in_cache_dir(tmp_path):
+    with EliClient.from_settings(Settings(eli_api_base_url=BASE_URL, cache_dir=tmp_path)) as eli:
+        assert eli.cache is not None and eli.cache.root == tmp_path / "eli"

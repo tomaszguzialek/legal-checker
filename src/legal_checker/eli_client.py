@@ -1,5 +1,8 @@
 """Client of the Sejm ELI API: act metadata and content (SPEC Task 2.2)."""
 
+import json
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Literal
 
 import httpx
@@ -73,19 +76,80 @@ class ActContent(BaseModel):
     data: bytes
 
 
-class EliClient:
-    """Synchronous ELI API client with timeouts and connection retries."""
+class FetchedAct(BaseModel):
+    """Act metadata and current-wording content, as fetched at ``fetched_at``."""
 
-    def __init__(self, base_url: str, http: httpx.Client | None = None):
+    metadata: ActMetadata
+    content: ActContent
+    fetched_at: datetime  # UTC; its date is the act's ``as_of_date``
+
+
+class ActCache:
+    """Two-level cache of fetched acts: a dict in RAM over files in ``<cache_dir>/eli/``.
+
+    Each act gets a directory (e.g. ``DU_2014_827/``) with ``act.json`` (metadata, source,
+    fetch time) and the raw ``content.pdf`` / ``content.html``. Entries older than
+    ``max_age`` count as misses, so the act's current wording is re-fetched;
+    ``max_age=None`` never expires (e.g. offline test runs on a prepared cache).
+    """
+
+    def __init__(self, cache_dir: Path, max_age: timedelta | None = timedelta(days=1)):
+        self.root = Path(cache_dir) / "eli"
+        self.max_age = max_age
+        self._memory: dict[str, FetchedAct] = {}
+
+    def get(self, ref: EliRef) -> FetchedAct | None:
+        act = self._memory.get(ref.key) or self._read(ref)
+        if act is None or self._expired(act):
+            return None
+        self._memory[ref.key] = act
+        return act
+
+    def put(self, ref: EliRef, act: FetchedAct) -> None:
+        directory = self._dir(ref)
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / self._content_file(act.content)).write_bytes(act.content.data)
+        # act.json is written last and atomically: its presence marks a complete entry.
+        tmp = directory / "act.json.tmp"
+        tmp.write_text(act.model_dump_json(by_alias=True, exclude={"content": {"data"}}, indent=2), encoding="utf-8")
+        tmp.replace(directory / "act.json")
+        self._memory[ref.key] = act
+
+    def _read(self, ref: EliRef) -> FetchedAct | None:
+        directory = self._dir(ref)
+        try:
+            data = json.loads((directory / "act.json").read_text(encoding="utf-8"))
+            content = ActContent.model_validate({**data["content"], "data": b""})
+            data["content"]["data"] = (directory / self._content_file(content)).read_bytes()
+            return FetchedAct.model_validate(data)
+        except (OSError, ValueError, KeyError):  # missing or corrupted entry: treat as a miss
+            return None
+
+    def _expired(self, act: FetchedAct) -> bool:
+        return self.max_age is not None and datetime.now(UTC) - act.fetched_at > self.max_age
+
+    def _dir(self, ref: EliRef) -> Path:
+        return self.root / ref.key.replace("/", "_")
+
+    @staticmethod
+    def _content_file(content: ActContent) -> str:
+        return "content.html" if content.media_type == "text/html" else "content.pdf"
+
+
+class EliClient:
+    """Synchronous ELI API client with timeouts, connection retries and an optional act cache."""
+
+    def __init__(self, base_url: str, http: httpx.Client | None = None, cache: ActCache | None = None):
         self.http = http or httpx.Client(
             base_url=base_url,
             timeout=_TIMEOUT,
             transport=httpx.HTTPTransport(retries=_CONNECT_RETRIES),
         )
+        self.cache = cache
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "EliClient":
-        return cls(settings.eli_api_base_url)
+        return cls(settings.eli_api_base_url, cache=ActCache(settings.cache_dir))
 
     def __enter__(self) -> "EliClient":
         return self
@@ -136,6 +200,17 @@ class EliClient:
         if received != media_type:
             raise EliClientError(f"API ELI zwróciło {received or 'brak typu'} zamiast {media_type} dla {source.path}")
         return ActContent(source=source, url=str(response.url), media_type=media_type, data=response.content)
+
+    def fetch_act(self, ref: EliRef) -> FetchedAct:
+        """Fetch metadata and current-wording content of an act, using the cache if set."""
+        if self.cache and (cached := self.cache.get(ref)):
+            return cached
+        metadata = self.get_metadata(ref)
+        content = self.download_text(self.select_text_source(metadata))
+        act = FetchedAct(metadata=metadata, content=content, fetched_at=datetime.now(UTC))
+        if self.cache:
+            self.cache.put(ref, act)
+        return act
 
     def _get(self, path: str) -> httpx.Response:
         try:
