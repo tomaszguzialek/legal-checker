@@ -55,10 +55,14 @@ Zbudowanie działającego od końca do końca (*end-to-end*) narzędzia CLI / le
 * **Klient LLM:** `langchain>=1.0` — `init_chat_model("provider:model")` jako jedyny punkt wyboru modelu (podmiana dostawcy wyłącznie przez `.env`, bez własnego adaptera). Integracje dostawców jako opcjonalne zależności: `langchain-anthropic`, `langchain-openai`, `langchain-google-genai`. Structured Outputs przez `model.with_structured_output(LlmEvaluationPayload, method="json_schema", include_raw=True)`.
 * **Obserwowalność (opcjonalnie):** LangSmith — śledzenie przebiegu grafu włączane zmiennymi `LANGSMITH_TRACING` / `LANGSMITH_API_KEY`, bez zmian w kodzie.
 * **Testy:** `pytest` + `pytest-asyncio` + `respx` (do mockowania zapytań HTTP) + fałszywe modele z `langchain_core` (`GenericFakeChatModel`) do deterministycznych testów grafu bez wywołań API.
+* **CI/CD:** GitHub Actions (`.github/workflows/ci.yml`) — `uv sync --locked` + `uv run pytest` przy każdym pushu na `main` i w każdym pull requeście; bez anulowania trwających buildów, tak aby każdy commit miał własny przebieg. Testy `live` są w CI pomijane (brak klucza API).
 
 ### 2.2 Docelowa struktura katalogów
 ```text
 legal-compliance-poc/
+├── .github/
+│   └── workflows/
+│       └── ci.yml                 # Pipeline CI (GitHub Actions): instalacja zależności + pytest
 ├── .env.example
 ├── pyproject.toml
 ├── README.md
@@ -201,6 +205,7 @@ Realizuj zadania **etapowo**, po każdym tasku uruchamiając testy jednostkowe i
 * [ ] **Subtask 1.1.1:** Utwórz strukturę katalogów zgodną z sekcją 2.2 oraz plik `pyproject.toml` z zależnościami (`pydantic`, `httpx`, `pymupdf`, `beautifulsoup4`, `rank-bm25`, `langchain`, `langchain-core`, `langgraph`, `python-dotenv`, `rich`; opcjonalne grupy: `anthropic = ["langchain-anthropic"]`, `openai = ["langchain-openai"]`, `google = ["langchain-google-genai"]`; dev: `pytest`, `pytest-asyncio`, `respx`).
 * [ ] **Subtask 1.1.2:** Utwórz `.env.example` i `src/legal_checker/config.py` (klasa ustawień ładująca m.in. `LLM_MODEL` w formacie `init_chat_model`, np. `"anthropic:claude-sonnet-5-5"`, klucz API dostawcy w jego standardowej zmiennej, np. `ANTHROPIC_API_KEY`, `ELI_API_BASE_URL="https://api.sejm.gov.pl/eli"`, `BM25_TOP_K=12`, `AGENT_MAX_TOOL_CALLS=4`, `GRAPH_RECURSION_LIMIT=20`, `CACHE_DIR=".cache"`, opcjonalnie `LANGSMITH_TRACING`, `LANGSMITH_API_KEY`).
 * [ ] **Subtask 1.1.3:** Zaimplementuj wszystkie modele Pydantic w `src/legal_checker/models.py` zgodnie z sekcjami 3.1–3.3 oraz `GraphState` w `src/legal_checker/agent/state.py` zgodnie z sekcją 3.4.
+* [ ] **Subtask 1.1.4:** Dodaj pipeline CI w GitHub Actions (`.github/workflows/ci.yml`) zgodnie z sekcją 2.1: instalacja zależności przez `uv sync --locked` i uruchomienie `pytest` przy pushu na `main` oraz w pull requestach.
 * **DoD:** Import `legal_checker.models`, `legal_checker.config` i `legal_checker.agent.state` działa bez błędów, a schemat JSON generuje się poprawnie przez `LlmEvaluationPayload.model_json_schema()`.
 
 ---
