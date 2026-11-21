@@ -6,7 +6,7 @@ import pytest
 import respx
 
 from legal_checker.config import Settings
-from legal_checker.eli_client import EliClient, EliClientError
+from legal_checker.eli_client import ActMetadata, EliClient, EliClientError
 from legal_checker.models import EliRef
 
 # Mocked host: ".test" is reserved (RFC 2606), so these tests never reach the real ELI API.
@@ -75,3 +75,69 @@ def test_get_metadata_network_error(client):
 def test_from_settings_uses_configured_base_url():
     with EliClient.from_settings(Settings(eli_api_base_url=BASE_URL)) as eli:
         assert str(eli.http.base_url) == f"{BASE_URL}/"
+
+
+def _meta(texts: list[tuple[str, str]], html: bool = False, pdf: bool = True, consolidated: list[str] = ()) -> ActMetadata:
+    return ActMetadata.from_api(
+        {
+            "ELI": "DU/2010/1",
+            "title": "Ustawa testowa",
+            "type": "Ustawa",
+            "status": "obowiązujący",
+            "textHTML": html,
+            "textPDF": pdf,
+            "texts": [{"type": t, "fileName": f} for t, f in texts],
+            "references": {"Inf. o tekście jednolitym": [{"id": e} for e in consolidated]},
+        }
+    )
+
+
+def test_select_text_source_prefers_unified_pdf_over_html(client, metadata_json):
+    source = client.select_text_source(ActMetadata.from_api(metadata_json))
+
+    assert (source.eli, source.kind, source.path) == (
+        "DU/2014/827",
+        "unified_pdf",
+        "/acts/DU/2014/827/text/U/D20140827Lj.pdf",
+    )
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    ("notice_texts", "expected_path"),
+    [
+        ([("O", "D20231.pdf"), ("T", "D20231L.pdf"), ("U", "D20231Lj.pdf")], "/acts/DU/2023/1/text/U/D20231Lj.pdf"),
+        ([("O", "D20231.pdf"), ("I", "D20231.pdf")], "/acts/DU/2023/1/text/O/D20231.pdf"),
+    ],
+)
+def test_select_text_source_falls_back_to_newest_consolidated_text(client, notice_texts, expected_path):
+    notice_route = respx.get(f"{BASE_URL}/acts/DU/2023/1").respond(
+        json={
+            "ELI": "DU/2023/1",
+            "title": "Obwieszczenie",
+            "type": "Obwieszczenie",
+            "status": "obowiązujący",
+            "texts": [{"type": t, "fileName": f} for t, f in notice_texts],
+        }
+    )
+    meta = _meta([("H", "text.html"), ("O", "D20101.pdf")], html=True, consolidated=["DU/2019/7", "DU/2023/1", "DU/2022/900"])
+
+    source = client.select_text_source(meta)
+
+    assert (source.eli, source.kind, source.path) == ("DU/2023/1", "consolidated_pdf", expected_path)
+    assert notice_route.called
+
+
+@pytest.mark.parametrize(
+    ("html", "pdf", "kind", "path"),
+    [(True, True, "html", "/acts/DU/2010/1/text.html"), (False, True, "pdf", "/acts/DU/2010/1/text.pdf")],
+)
+def test_select_text_source_without_amendments(client, html, pdf, kind, path):
+    source = client.select_text_source(_meta([("O", "D20101.pdf")], html=html, pdf=pdf))
+
+    assert (source.kind, source.path) == (kind, path)
+
+
+def test_select_text_source_no_content(client):
+    with pytest.raises(EliClientError, match="nie ma dostępnej treści"):
+        client.select_text_source(_meta([], html=False, pdf=False))

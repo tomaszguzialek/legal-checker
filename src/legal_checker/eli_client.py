@@ -1,5 +1,7 @@
 """Client of the Sejm ELI API: act metadata and content (SPEC Task 2.2)."""
 
+from typing import Literal
+
 import httpx
 from pydantic import BaseModel, Field
 
@@ -8,6 +10,13 @@ from legal_checker.models import EliRef
 
 _TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 _CONNECT_RETRIES = 2
+
+# Text variant types in ActMetadata.texts. Only "U" (Kancelaria Sejmu's unified text)
+# carries the current wording of an amended act; "H" (text.html), "O"/"I" and "T" hold
+# the wording as originally published. See docs/adr/0002-current-act-text-source.md.
+_UNIFIED = "U"
+_CONSOLIDATED_TEXT_RELATION = "Inf. o tekście jednolitym"
+_CONSOLIDATED_TEXT_TYPES = ("U", "T", "O")
 
 
 class EliClientError(RuntimeError):
@@ -47,6 +56,14 @@ class ActMetadata(BaseModel):
         return cls.model_validate({**data, "references": references})
 
 
+class TextSource(BaseModel):
+    """Where to download the most current wording of an act from."""
+
+    eli: str  # act owning the file: the act itself or its consolidated-text notice
+    kind: Literal["unified_pdf", "consolidated_pdf", "html", "pdf"]
+    path: str  # API path relative to the base URL
+
+
 class EliClient:
     """Synchronous ELI API client with timeouts and connection retries."""
 
@@ -74,6 +91,33 @@ class EliClient:
         """Fetch act metadata: title, status, dates, text variants and references."""
         response = self._get(f"/acts/{ref.key}")
         return ActMetadata.from_api(response.json())
+
+    def select_text_source(self, meta: ActMetadata) -> TextSource:
+        """Pick the source of the act's current wording ("na dzień dzisiejszy").
+
+        Order: the act's unified text PDF, then the newest consolidated text announced
+        for it, then HTML, then the main PDF. HTML and the main PDF hold the wording as
+        published, which is current only for acts that were never amended.
+        """
+        unified = next((t for t in meta.texts if t.type == _UNIFIED), None)
+        if unified:
+            return TextSource(eli=meta.eli, kind="unified_pdf", path=f"/acts/{meta.eli}/text/U/{unified.file_name}")
+
+        consolidated = meta.references.get(_CONSOLIDATED_TEXT_RELATION, [])
+        if consolidated:
+            newest = max(map(EliRef.from_key, consolidated), key=lambda ref: (ref.year, ref.position))
+            notice = self.get_metadata(newest)
+            for text_type in _CONSOLIDATED_TEXT_TYPES:
+                text = next((t for t in notice.texts if t.type == text_type), None)
+                if text:
+                    path = f"/acts/{newest.key}/text/{text_type}/{text.file_name}"
+                    return TextSource(eli=newest.key, kind="consolidated_pdf", path=path)
+
+        if meta.text_html:
+            return TextSource(eli=meta.eli, kind="html", path=f"/acts/{meta.eli}/text.html")
+        if meta.text_pdf:
+            return TextSource(eli=meta.eli, kind="pdf", path=f"/acts/{meta.eli}/text.pdf")
+        raise EliClientError(f"Akt {meta.eli} nie ma dostępnej treści w API ELI")
 
     def _get(self, path: str) -> httpx.Response:
         try:

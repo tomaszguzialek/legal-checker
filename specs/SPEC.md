@@ -222,14 +222,14 @@ Realizuj zadania **etapowo**, po każdym tasku uruchamiając testy jednostkowe i
 
 #### Task 2.2: Klient API ELI i wybór aktualnego tekstu (`eli_client.py`)
 * [ ] **Subtask 2.2.1:** Zaimplementuj pobieranie metadanych aktu z `GET /acts/{publisher}/{year}/{position}` (tytuł aktu, status, daty, informacje o tekstach/powiązaniach).
-* [ ] **Subtask 2.2.2:** Dodaj logikę sprawdzania, czy dla danego aktu dostępny jest nowszy tekst jednolity / ujednolicony (w metadanych lub powiązaniach `/references`), aby w PoC pracować na najbardziej aktualnym brzmieniu „na dzień dzisiejszy”.
-* [ ] **Subtask 2.2.3:** Zaimplementuj pobieranie treści dokumentu (preferuj HTML, jeśli dostępny; w przeciwnym razie pobierz `text.pdf`).
+* [ ] **Subtask 2.2.2:** Dodaj logikę wyboru źródła najbardziej aktualnego brzmienia aktu „na dzień dzisiejszy” (uzasadnienie: [ADR 0002](../docs/adr/0002-current-act-text-source.md)). Kolejność: (1) tekst ujednolicony aktu (PDF typu `U` w `texts`), (2) najnowszy tekst jednolity z powiązań `Inf. o tekście jednolitym` (jego PDF `U` / `T` / `O`), (3) HTML (`text.html`), (4) `text.pdf`. Uwaga: `text.html` i `text.pdf` zawierają brzmienie pierwotne (z dnia ogłoszenia), więc są aktualne tylko dla aktów niezmienianych.
+* [ ] **Subtask 2.2.3:** Zaimplementuj pobieranie treści dokumentu ze źródła wybranego w Subtasku 2.2.2 (PDF lub HTML).
 * [ ] **Subtask 2.2.4:** Dodaj prosty lokalny cache (w pamięci RAM + zapis plików surowych/sparsowanych w `.cache/`), aby nie pobierać tego samego aktu wielokrotnie podczas testów.
 * **DoD:** Klient potrafi pobrać metadane i plik treści np. dla `DU/2014/827` (ustawa o prawach konsumenta) i zapisać je w cache.
 
 #### Task 2.3: Ekstrakcja i czyszczenie tekstu (`text_extractor.py`)
 * [ ] **Subtask 2.3.1:** Zaimplementuj ekstrakcję tekstu z PDF (za pomocą `pymupdf` z zachowaniem kolejności bloków tekstu) oraz z HTML (`BeautifulSoup`).
-* [ ] **Subtask 2.3.2:** Zaimplementuj czyszczenie artefaktów dzienników urzędowych: usuwanie powtarzających się nagłówków/stopek stron (np. `©Kancelaria Sejmu`, numery stron `s. 1/45`, daty generowania pliku).
+* [ ] **Subtask 2.3.2:** Zaimplementuj czyszczenie artefaktów dzienników urzędowych: usuwanie powtarzających się nagłówków/stopek stron (np. `©Kancelaria Sejmu`, numery stron `s. 1/45`, daty generowania pliku). W tekście ujednoliconym (PDF `U`) usuń bloki `<…>` wraz z treścią (brzmienie jeszcze nieobowiązujące, np. `<5ga) …>` z przypisem „wejdzie w życie z dn. …”), a z bloków `[…]` usuń tylko nawiasy (brzmienie obowiązujące dziś, przeznaczone do zmiany) — patrz [ADR 0002](../docs/adr/0002-current-act-text-source.md).
 * [ ] **Subtask 2.3.3:** Zaimplementuj łączenie wyrazów podzielonych myślnikiem na końcu linii (`([a-ząćęłńóśźż])-\n([a-ząćęłńóśźż])` → `\1\2`) przy jednoczesnym zachowaniu podziałów akapitów.
 * **DoD:** Wyekstrahowany tekst ustawy jest ciągły, pozbawiony nagłówków stron i połamanych wyrazów, gotowy do cięcia strukturalnego.
 
