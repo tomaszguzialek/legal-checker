@@ -37,7 +37,7 @@ Zbudowanie działającego od końca do końca (*end-to-end*) narzędzia CLI / le
 * Brak obsługi dat wstecznych (`as_of_date` ustawiane automatycznie na bieżącą datę pobrania).
 * Brak automatycznego zgadywania aktu prawnego bez żadnej wskazówki (*wariant ambitny* odłożony na etap produkcyjny).
 * Brak bazy danych (PostgreSQL), bazy wektorowej (`pgvector`/Qdrant) i embeddingów — wszystko działa w pamięci operacyjnej procesu (z opcjonalnym lokalnym cache plików `.json` w katalogu `.cache/`).
-* Brak systemu wieloagentowego (*multi-agent*, *supervisor*) — jeden agent z dwoma narzędziami tylko do odczytu.
+* Brak systemu wieloagentowego (*multi-agent*, *supervisor*) i Deep Agents — jeden agent z dwoma narzędziami tylko do odczytu w jawnym `StateGraph` (uzasadnienie: [ADR 0001](../docs/adr/0001-langgraph-stategraph-over-deep-agents.md)).
 * Brak narzędzi z dostępem do sieci dla agenta (agent nie wywołuje API ELI ani wyszukiwarki internetowej — pobranie aktu jest deterministycznym węzłem grafu).
 * Brak trwałego checkpointera LangGraph (stan żyje tylko w trakcie jednego wywołania), brak *human-in-the-loop* i interrupts.
 
