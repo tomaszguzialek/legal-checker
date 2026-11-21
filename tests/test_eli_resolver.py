@@ -11,7 +11,8 @@ from legal_checker.eli_resolver import (
     search_by_title,
 )
 
-BASE_URL = "https://api.sejm.gov.pl/eli"
+# Mocked host: ".test" is reserved (RFC 2606), so these tests never reach the real ELI API.
+BASE_URL = "https://eli-api.test/eli"
 
 
 def _act(eli: str, title: str, type_: str = "Ustawa", in_force: str = "IN_FORCE") -> dict:
