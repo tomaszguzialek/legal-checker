@@ -1,0 +1,85 @@
+{
+  "address": "WDU20140000827",
+  "announcementDate": "2014-05-30",
+  "changeDate": "2026-10-29T14:42:38",
+  "displayAddress": "Dz.U. 2014 poz. 827",
+  "pos": 827,
+  "promulgation": "2014-06-24",
+  "publisher": "DU",
+  "status": "akt posiada tekst jednolity",
+  "textHTML": true,
+  "textPDF": true,
+  "title": "Ustawa z dnia 30 maja 2014 r. o prawach konsumenta",
+  "type": "Ustawa",
+  "volume": 0,
+  "year": 2014,
+  "entryIntoForce": "2014-12-25",
+  "inForce": "IN_FORCE",
+  "keywords": [
+    "konsumenci",
+    "rękojmia",
+    "umowy",
+    "usługi",
+    "gwarancja"
+  ],
+  "references": {
+    "Akty zmieniające": [
+      {
+        "id": "DU/2026/1353",
+        "date": "2027-09-27"
+      },
+      {
+        "id": "DU/2025/1172",
+        "date": "2025-11-27"
+      },
+      {
+        "id": "DU/2024/1222",
+        "date": "2024-11-10"
+      }
+    ],
+    "Inf. o tekście jednolitym": [
+      {
+        "id": "DU/2026/1244"
+      },
+      {
+        "id": "DU/2024/1796"
+      },
+      {
+        "id": "DU/2023/2759"
+      },
+      {
+        "id": "DU/2020/287"
+      },
+      {
+        "id": "DU/2019/134"
+      },
+      {
+        "id": "DU/2017/683"
+      }
+    ]
+  },
+  "texts": [
+    {
+      "fileName": "text.html",
+      "type": "H"
+    },
+    {
+      "fileName": "D20140827.pdf",
+      "type": "O"
+    },
+    {
+      "fileName": "D20140827.pdf",
+      "type": "I"
+    },
+    {
+      "fileName": "D20140827L.pdf",
+      "type": "T"
+    },
+    {
+      "fileName": "D20140827Lj.pdf",
+      "type": "U"
+    }
+  ],
+  "validFrom": "2014-12-25",
+  "ELI": "DU/2014/827"
+}
