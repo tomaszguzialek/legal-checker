@@ -6,7 +6,7 @@ import pytest
 import respx
 
 from legal_checker.config import Settings
-from legal_checker.eli_client import ActMetadata, EliClient, EliClientError
+from legal_checker.eli_client import ActMetadata, EliClient, EliClientError, TextSource
 from legal_checker.models import EliRef
 
 # Mocked host: ".test" is reserved (RFC 2606), so these tests never reach the real ELI API.
@@ -141,3 +141,42 @@ def test_select_text_source_without_amendments(client, html, pdf, kind, path):
 def test_select_text_source_no_content(client):
     with pytest.raises(EliClientError, match="nie ma dostępnej treści"):
         client.select_text_source(_meta([], html=False, pdf=False))
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    ("kind", "path", "content_type", "media_type"),
+    [
+        ("unified_pdf", "/acts/DU/2014/827/text/U/D20140827Lj.pdf", "application/pdf", "application/pdf"),
+        ("html", "/acts/DU/2010/1/text.html", "text/html;charset=utf-8", "text/html"),
+    ],
+)
+def test_download_text(client, kind, path, content_type, media_type):
+    body = b"%PDF-1.7 fake" if media_type == "application/pdf" else "<html>Art. 1.</html>".encode()
+    respx.get(f"{BASE_URL}{path}").respond(content=body, headers={"content-type": content_type})
+    source = TextSource(eli="DU/2014/827", kind=kind, path=path)
+
+    content = client.download_text(source)
+
+    assert content.data == body
+    assert content.media_type == media_type
+    assert content.url == f"{BASE_URL}{path}"
+    assert content.source == source
+
+
+@respx.mock
+def test_download_text_rejects_unexpected_media_type(client):
+    path = "/acts/DU/2014/827/text/U/D20140827Lj.pdf"
+    respx.get(f"{BASE_URL}{path}").respond(text="<html>Błąd</html>", headers={"content-type": "text/html"})
+
+    with pytest.raises(EliClientError, match="text/html zamiast application/pdf"):
+        client.download_text(TextSource(eli="DU/2014/827", kind="unified_pdf", path=path))
+
+
+@respx.mock
+def test_download_text_not_found(client):
+    path = "/acts/DU/2014/827/text/U/missing.pdf"
+    respx.get(f"{BASE_URL}{path}").respond(404)
+
+    with pytest.raises(EliClientError, match="Nie znaleziono"):
+        client.download_text(TextSource(eli="DU/2014/827", kind="unified_pdf", path=path))

@@ -64,6 +64,15 @@ class TextSource(BaseModel):
     path: str  # API path relative to the base URL
 
 
+class ActContent(BaseModel):
+    """Raw act content downloaded from a ``TextSource``."""
+
+    source: TextSource
+    url: str  # absolute URL of the downloaded file, used as ``source_url``
+    media_type: Literal["application/pdf", "text/html"]
+    data: bytes
+
+
 class EliClient:
     """Synchronous ELI API client with timeouts and connection retries."""
 
@@ -118,6 +127,15 @@ class EliClient:
         if meta.text_pdf:
             return TextSource(eli=meta.eli, kind="pdf", path=f"/acts/{meta.eli}/text.pdf")
         raise EliClientError(f"Akt {meta.eli} nie ma dostępnej treści w API ELI")
+
+    def download_text(self, source: TextSource) -> ActContent:
+        """Download the file a ``TextSource`` points to and check its media type."""
+        response = self._get(source.path)
+        media_type = "text/html" if source.kind == "html" else "application/pdf"
+        received = response.headers.get("content-type", "").split(";")[0].strip()
+        if received != media_type:
+            raise EliClientError(f"API ELI zwróciło {received or 'brak typu'} zamiast {media_type} dla {source.path}")
+        return ActContent(source=source, url=str(response.url), media_type=media_type, data=response.content)
 
     def _get(self, path: str) -> httpx.Response:
         try:
