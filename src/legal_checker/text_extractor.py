@@ -28,6 +28,25 @@ _MAX_DROPPED_SHARE = 0.25
 _UNIT_START = re.compile(r"^(?:Art\.|§)\s*\d+[a-z]*\.")
 _UNIT_LINE = re.compile(r"^(?:Art\.|§)\s*\d+", re.MULTILINE)
 
+# Running headers/footers repeat on most pages (page numbers aside) as a page's first or
+# last line. A line starting like a provision ("Art. 5. (uchylony)") is never one.
+_EDGE_LINES = 1
+_MIN_REPEAT_PAGES = 3
+_MIN_REPEAT_SHARE = 0.5
+_DIGITS = re.compile(r"\d+")
+# Known page furniture, as a fallback for documents too short for repetition detection.
+_FURNITURE = re.compile(
+    r"^(?:©\s*Kancelaria Sejmu(?:\s+s\.\s*\d+/\d+)?"
+    r"|s\.\s*\d+/\d+"
+    r"|\d{4}-\d{2}-\d{2}"  # generation date of a unified text
+    r"|(?:Dziennik Ustaw|Monitor Polski)\s*[–-]\s*\d+\s*[–-]\s*Poz\.\s*\d+)$",
+    re.IGNORECASE,
+)
+_INVISIBLE = re.compile(r"[\u200b\u200c\u200d\u2060\ufeff]")
+# Unified texts mark amendments: "<…>" wording not yet in force, "[…]" wording in force
+# today but due to change. See docs/adr/0002-current-act-text-source.md.
+_FUTURE_WORDING = re.compile(r"<[^<>]*>")
+
 # HTML elements outside the act's text: table of contents, footnote pop-ups, hidden citations.
 _HTML_NOISE = "#toc, .show-all, .tooltip-text, .gloss-link, .xHidden, script, style"
 _HTML_BLOCKS = ["div", "p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "tr", "table", "section"]
@@ -52,15 +71,16 @@ def extract_pdf_text(data: bytes) -> ExtractedText:
     with pymupdf.open(stream=data, filetype="pdf") as doc:
         pages = [_text_spans(page) for page in doc]
     doc_size = _dominant_size([span for spans in pages for span in spans])
-    lines: list[str] = []
+    page_lines: list[list[str]] = []
     dropped: list[dict] = []
     for spans in pages:
         body, small = _split_by_size(spans, doc_size)
-        lines += _visual_lines(body)
+        page_lines.append(_visual_lines(body))
         dropped += small
-    text = "\n".join(lines)
+    lines = [line for line in _drop_repeated_edge_lines(page_lines) if not _FURNITURE.match(line)]
+    text, warnings = _resolve_amendment_markers("\n".join(lines))
 
-    warnings = _structure_warnings(text)
+    warnings += _structure_warnings(text)
     total = sum(len(span["text"].strip()) for spans in pages for span in spans)
     dropped_chars = sum(len(span["text"].strip()) for span in dropped)
     if total and dropped_chars / total > _MAX_DROPPED_SHARE:
@@ -71,6 +91,57 @@ def extract_pdf_text(data: bytes) -> ExtractedText:
     if suspicious := next((s["text"].strip() for s in dropped if _UNIT_START.match(s["text"].strip())), None):
         warnings.append(f"Ekstrakcja PDF pominęła tekst wyglądający na przepis: {suspicious[:80]!r}")
     return ExtractedText(text=text, warnings=warnings)
+
+
+def _drop_repeated_edge_lines(page_lines: list[list[str]]) -> list[str]:
+    """Drop running headers/footers: first/last page lines repeated (digits aside) on most pages."""
+
+    def key(line: str) -> str:
+        return _DIGITS.sub("#", line)
+
+    def edges(lines: list[str]) -> list[str]:
+        return lines[:_EDGE_LINES] + lines[-_EDGE_LINES:]
+
+    pages_with = Counter(k for lines in page_lines for k in {key(line) for line in edges(lines)})
+    threshold = max(_MIN_REPEAT_PAGES, _MIN_REPEAT_SHARE * len(page_lines))
+    repeated = {k for k, count in pages_with.items() if count >= threshold}
+
+    kept: list[str] = []
+    for lines in page_lines:
+        last = len(lines) - _EDGE_LINES
+        kept += [
+            line
+            for i, line in enumerate(lines)
+            if not ((i < _EDGE_LINES or i >= last) and key(line) in repeated and not _UNIT_START.match(line))
+        ]
+    return kept
+
+
+def _resolve_amendment_markers(text: str) -> tuple[str, list[str]]:
+    """Keep the wording in force today: drop "<…>" blocks, unwrap "[…]".
+
+    Markers that are unbalanced or nested are left untouched with a warning, so a stray
+    "<" (e.g. a less-than sign) cannot swallow a large part of the act.
+    """
+    if not _balanced(text, "<", ">") or not _balanced(text, "[", "]"):
+        return text, ["Niezrównoważone znaczniki zmian „<…>” / „[…]” w tekście aktu; pozostawiono je bez zmian"]
+    text = _FUTURE_WORDING.sub("", text).replace("[", "").replace("]", "")
+    lines = (_WHITESPACE.sub(" ", _INVISIBLE.sub("", line)).strip() for line in text.split("\n"))
+    return "\n".join(line for line in lines if line), []
+
+
+def _balanced(text: str, opening: str, closing: str) -> bool:
+    depth = 0
+    for char in text:
+        if char == opening:
+            depth += 1
+            if depth > 1:
+                return False
+        elif char == closing:
+            depth -= 1
+            if depth < 0:
+                return False
+    return depth == 0
 
 
 def _structure_warnings(text: str) -> list[str]:

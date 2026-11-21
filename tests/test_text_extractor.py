@@ -54,8 +54,7 @@ def test_extract_pdf_text_keeps_body_lines_in_reading_order():
         "4) zasady i tryb zawierania z konsumentem umowy na odleglosc",
         "dotyczacej uslug finansowych.",
         "WZOR FORMULARZA ODSTAPIENIA OD UMOWY",
-        "- Adresat",
-        "2026-10-29",  # annex-page footer has the annex text's size: left to the cleaning step
+        "- Adresat",  # the annex-page footer "2026-10-29" (annex-sized) is removed by pattern
     ]
 
 
@@ -78,6 +77,87 @@ def _pdf(lines: list[tuple[str, float]]) -> bytes:
     for i, (text, size) in enumerate(lines):
         page.insert_text((71, 100 + 20 * i), text, fontsize=size)
     return doc.tobytes()
+
+
+BODY = "Konsument moze odstapic od umowy w terminie 14 dni bez podania przyczyny."
+
+
+def test_extract_pdf_text_drops_body_sized_running_headers_repeated_on_pages():
+    doc = pymupdf.open()
+    for number in range(1, 5):
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((200, 50), f"Dziennik Ustaw - {number + 1} - Poz. 827", fontsize=12)
+        page.insert_text((71, 100), f"Art. {number}. (uchylony)", fontsize=12)
+        page.insert_text((71, 120), BODY, fontsize=12)
+        page.insert_text((71, 140), BODY, fontsize=12)
+        page.insert_text((300, 800), f"Strona {number}", fontsize=12)
+
+    lines = extract_pdf_text(doc.tobytes()).text.split("\n")
+
+    assert lines[:3] == ["Art. 1. (uchylony)", BODY, BODY]
+    assert len(lines) == 12
+    assert not any("Dziennik Ustaw" in line or "Strona" in line for line in lines)
+
+
+def test_extract_pdf_text_never_treats_repeated_provisions_as_headers():
+    doc = pymupdf.open()
+    for number in range(1, 5):  # every page starts with a repealed article: same line, digits aside
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((71, 50), f"Art. {number}. (uchylony)", fontsize=12)
+        page.insert_text((71, 70), BODY, fontsize=12)
+
+    lines = extract_pdf_text(doc.tobytes()).text.split("\n")
+
+    assert [line for line in lines if line.startswith("Art.")] == [f"Art. {n}. (uchylony)" for n in range(1, 5)]
+
+
+@pytest.mark.parametrize(
+    "furniture",
+    # Built-in PDF fonts cannot draw an en dash; the pattern accepts both "–" and "-".
+    ["Dziennik Ustaw - 2 - Poz. 827", "Monitor Polski - 3 - Poz. 100", "©Kancelaria Sejmu s. 1/48", "s. 2/48", "2026-10-29"],
+)
+def test_extract_pdf_text_drops_known_page_furniture_by_pattern(furniture):
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((71, 50), furniture, fontsize=12, fontname="tiro")  # "tiro" can draw ©
+    page.insert_text((71, 100), "Art. 1. " + BODY, fontsize=12)
+
+    assert extract_pdf_text(doc.tobytes()).text == "Art. 1. " + BODY
+
+
+def test_extract_pdf_text_keeps_wording_in_force_today():
+    result = extract_pdf_text(
+        _pdf(
+            [
+                ("Art. 2. Okreslenia uzyte w ustawie oznaczaja:", 12),
+                ("5g) interoperacyjnosc - zdolnosc tresci cyfrowej;", 12),
+                ("<5ga) aktualizacja oprogramowania - bezplatna aktualizacje,", 12),  # not yet in force
+                ("niezbedna do zapewnienia zgodnosci z umowa;>", 12),
+                ("[5) odpowiedzialnosc za zgodnosc swiadczenia z umowa;]", 12),  # in force, to be replaced
+                ("<5) odpowiedzialnosc za zgodnosc swiadczenia z umowa, w tym okres jej trwania;>", 12),
+                ("6) tresc uslug posprzedaznych [i gwarancji];", 12),
+            ]
+        )
+    )
+
+    assert result.warnings == []
+    assert result.text.split("\n") == [
+        "Art. 2. Okreslenia uzyte w ustawie oznaczaja:",
+        "5g) interoperacyjnosc - zdolnosc tresci cyfrowej;",
+        "5) odpowiedzialnosc za zgodnosc swiadczenia z umowa;",
+        "6) tresc uslug posprzedaznych i gwarancji;",
+    ]
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["masa pojazdu < 3,5 t i dlugosc pojazdu ponizej 12 m", "<a <b> c>", "[niedomkniety nawias", "a] b ["],
+)
+def test_extract_pdf_text_leaves_unbalanced_markers_untouched(line):
+    result = extract_pdf_text(_pdf([("Art. 1. " + BODY, 12), (line, 12)]))
+
+    assert result.text.split("\n")[1] == line
+    assert any("Niezrównoważone znaczniki" in w for w in result.warnings)
 
 
 def test_extract_pdf_text_warns_when_layout_breaks_the_size_filter():
