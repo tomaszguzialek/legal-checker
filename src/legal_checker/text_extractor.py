@@ -46,6 +46,10 @@ _INVISIBLE = re.compile(r"[\u200b\u200c\u200d\u2060\ufeff]")
 # Unified texts mark amendments: "<…>" wording not yet in force, "[…]" wording in force
 # today but due to change. See docs/adr/0002-current-act-text-source.md.
 _FUTURE_WORDING = re.compile(r"<[^<>]*>")
+# A word split across lines ("przedsię-\nbiorcy") is rejoined; other line breaks stay. Polish
+# typesetting repeats a real hyphen at the start of the next line ("e-\n-mail"): keep one.
+_COMPOUND_SPLIT = re.compile(r"([a-ząćęłńóśźż])-\n-([a-ząćęłńóśźż])", re.IGNORECASE)
+_WORD_SPLIT = re.compile(r"([a-ząćęłńóśźż])-\n([a-ząćęłńóśźż])")
 
 # HTML elements outside the act's text: table of contents, footnote pop-ups, hidden citations.
 _HTML_NOISE = "#toc, .show-all, .tooltip-text, .gloss-link, .xHidden, script, style"
@@ -79,6 +83,7 @@ def extract_pdf_text(data: bytes) -> ExtractedText:
         dropped += small
     lines = [line for line in _drop_repeated_edge_lines(page_lines) if not _FURNITURE.match(line)]
     text, warnings = _resolve_amendment_markers("\n".join(lines))
+    text = _join_split_words(text)
 
     warnings += _structure_warnings(text)
     total = sum(len(span["text"].strip()) for spans in pages for span in spans)
@@ -128,6 +133,11 @@ def _resolve_amendment_markers(text: str) -> tuple[str, list[str]]:
     text = _FUTURE_WORDING.sub("", text).replace("[", "").replace("]", "")
     lines = (_WHITESPACE.sub(" ", _INVISIBLE.sub("", line)).strip() for line in text.split("\n"))
     return "\n".join(line for line in lines if line), []
+
+
+def _join_split_words(text: str) -> str:
+    text = _COMPOUND_SPLIT.sub(r"\1-\2", text)
+    return _WORD_SPLIT.sub(r"\1\2", text)
 
 
 def _balanced(text: str, opening: str, closing: str) -> bool:

@@ -160,6 +160,34 @@ def test_extract_pdf_text_leaves_unbalanced_markers_untouched(line):
     assert any("Niezrównoważone znaczniki" in w for w in result.warnings)
 
 
+def test_extract_pdf_text_joins_words_split_across_lines():
+    result = extract_pdf_text(
+        _pdf(
+            [
+                ("Art. 3. Obowiazki przedsie-", 12),
+                ("biorcy wobec konsumenta okresla", 12),
+                ("umowa. Adres e-", 12),  # real hyphen at a line break: repeated on the next line
+                ("-mail podaje sie na stronie", 12),
+                ("Art. 4. Termin - liczony od dnia", 12),  # spaced dash between words: not a split
+                ("zawarcia umowy - wynosi 14 dni.", 12),
+            ]
+        )
+    )
+
+    assert result.text.split("\n") == [
+        "Art. 3. Obowiazki przedsiebiorcy wobec konsumenta okresla",
+        "umowa. Adres e-mail podaje sie na stronie",
+        "Art. 4. Termin - liczony od dnia",
+        "zawarcia umowy - wynosi 14 dni.",
+    ]
+
+
+def test_extract_pdf_text_keeps_split_before_capital_or_digit():
+    lines = [("Art. 5. Zgodnie z ustawa-", 12), ("Kodeks cywilny oraz art. 12-", 12), ("14 ustawy.", 12)]
+
+    assert extract_pdf_text(_pdf(lines)).text.split("\n") == [line for line, _ in lines]
+
+
 def test_extract_pdf_text_warns_when_layout_breaks_the_size_filter():
     # Articles set smaller than the surrounding text: the filter drops them, which must not go unnoticed.
     result = extract_pdf_text(
