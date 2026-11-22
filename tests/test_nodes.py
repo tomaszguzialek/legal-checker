@@ -1,11 +1,7 @@
-from datetime import UTC, datetime
-from pathlib import Path
-
 import pytest
 from langchain_core.language_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableLambda
-
 from langgraph.graph import END, START, StateGraph
 
 from legal_checker.agent.nodes import (
@@ -27,43 +23,18 @@ from legal_checker.agent.prompts import EVALUATION_SYSTEM_PROMPT, RESEARCH_SYSTE
 from legal_checker.agent.state import GraphState
 from legal_checker.agent.tools import make_tools
 from legal_checker.bm25_retriever import LateBoundBm25Index
-from legal_checker.eli_client import ActCache, ActContent, ActMetadata, EliClient, FetchedAct, TextSource
+from legal_checker.eli_client import EliClient
 from legal_checker.models import (
     ActDocument,
     CheckRequest,
     ComplianceStatus,
-    EliRef,
     LegalUnit,
     LlmEvaluationPayload,
 )
-from legal_checker.text_extractor import EXTRACTOR_VERSION, ExtractedText
 
-# Mocked host: ".test" is reserved (RFC 2606), so these tests never reach the real ELI API.
-BASE_URL = "https://eli-api.test/eli"
-ACT_TEXT = (Path(__file__).parent / "fixtures" / "acts" / "DU_2014_827.txt").read_text(encoding="utf-8")
-CONSUMER_RIGHTS = EliRef(publisher="DU", year=2014, position=827)
-PDF_URL = f"{BASE_URL}/acts/DU/2014/827/text/U/D20140827Lj.pdf"
-FETCHED_AT = datetime(2026, 11, 20, 8, 30, tzinfo=UTC)
+from conftest import CONSUMER_RIGHTS, CONSUMER_RIGHTS_TEXT
+
 WITHDRAWAL = "Klient może odstąpić od umowy zawartej na odległość w terminie 14 dni bez podania przyczyny."
-
-
-@pytest.fixture
-def eli(tmp_path):
-    """Client over a never-expiring cache holding the act and its extracted fixture text: no HTTP at all."""
-    cache = ActCache(tmp_path, max_age=None)
-    source = TextSource(eli="DU/2014/827", kind="unified_pdf", path="/acts/DU/2014/827/text/U/D20140827Lj.pdf")
-    content = ActContent(source=source, url=PDF_URL, media_type="application/pdf", data=b"%PDF-1.7 fake")
-    metadata = ActMetadata(
-        ELI="DU/2014/827",
-        title="Ustawa z dnia 30 maja 2014 r. o prawach konsumenta",
-        type="Ustawa",
-        status="obowiązujący",
-    )
-    cache.put(CONSUMER_RIGHTS, FetchedAct(metadata=metadata, content=content, fetched_at=FETCHED_AT))
-    extracted = ExtractedText(text=ACT_TEXT, warnings=["Ostrzeżenie ekstrakcji"])
-    cache.put_derived(CONSUMER_RIGHTS, f"extracted-v{EXTRACTOR_VERSION}.json", extracted.model_dump_json())
-    with EliClient(BASE_URL, cache=cache) as client:
-        yield client
 
 
 def run_act_nodes(eli: EliClient, fragment: str, index: LateBoundBm25Index | None = None) -> dict:
@@ -76,7 +47,7 @@ def run_act_nodes(eli: EliClient, fragment: str, index: LateBoundBm25Index | Non
     return state
 
 
-def test_act_nodes_resolve_fetch_chunk_and_retrieve(eli):
+def test_act_nodes_resolve_fetch_chunk_and_retrieve(eli, cached_act):
     index = LateBoundBm25Index()
 
     state = run_act_nodes(eli, WITHDRAWAL, index)
@@ -85,9 +56,9 @@ def test_act_nodes_resolve_fetch_chunk_and_retrieve(eli):
     assert state["act"] == ActDocument(
         eli="DU/2014/827",
         title="Ustawa z dnia 30 maja 2014 r. o prawach konsumenta",
-        source_url=PDF_URL,
-        as_of_date="2026-11-20",
-        text=ACT_TEXT,
+        source_url=cached_act.content.url,
+        as_of_date=cached_act.fetched_at.date().isoformat(),
+        text=CONSUMER_RIGHTS_TEXT,
     )
     assert state["units"] and all(unit.eli == "DU/2014/827" for unit in state["units"])
     assert state["warnings"] == ["Ostrzeżenie ekstrakcji"]
@@ -101,7 +72,7 @@ def test_late_bound_index_fails_clearly_before_retrieve():
         LateBoundBm25Index().search("odstąpienie")
 
 
-def test_no_shared_token_short_circuits_to_not_applicable(eli):
+def test_no_shared_token_short_circuits_to_not_applicable(eli, cached_act):
     state = run_act_nodes(eli, "Qwerty zxcvb asdfgh 2099.")
 
     assert state["candidates"] == []
@@ -113,12 +84,12 @@ def test_no_shared_token_short_circuits_to_not_applicable(eli):
     assert result.confidence == SHORT_CIRCUIT_CONFIDENCE
     assert result.document_excerpt is None and result.legal_basis.provision is None
     assert result.legal_basis.eli == "DU/2014/827"
-    assert result.legal_basis.source_url == PDF_URL
+    assert result.legal_basis.source_url == cached_act.content.url
     assert result.consulted_units == []
     assert result.warnings == ["Ostrzeżenie ekstrakcji"]
 
 
-def test_validate_attaches_metadata_and_everything_the_agent_saw(eli):
+def test_validate_attaches_metadata_and_everything_the_agent_saw(eli, cached_act):
     state = run_act_nodes(eli, WITHDRAWAL)
     unit = LegalUnit(unit_id="DU/2014/827:art.38", eli="DU/2014/827", article="38", hierarchy_path=[], text="Art. 38.")
     candidate_ids = [unit.unit_id for unit, _ in state["candidates"]]
@@ -141,8 +112,8 @@ def test_validate_attaches_metadata_and_everything_the_agent_saw(eli):
         "act_title": "Ustawa z dnia 30 maja 2014 r. o prawach konsumenta",
         "eli": "DU/2014/827",
         "provision": "art. 27",
-        "as_of_date": "2026-11-20",
-        "source_url": PDF_URL,
+        "as_of_date": cached_act.fetched_at.date().isoformat(),
+        "source_url": cached_act.content.url,
     }
     assert result.consulted_units == [*candidate_ids, "DU/2014/827:art.38"]
 
