@@ -2,6 +2,10 @@
 
 import re
 
+from rank_bm25 import BM25Okapi
+
+from legal_checker.models import LegalUnit
+
 # Words and numbers; punctuation separates tokens ("art. 27a," -> "art", "27a").
 _WORD = re.compile(r"\w+")
 # Frequent function words that carry no meaning for retrieval.
@@ -44,3 +48,18 @@ def stem(word: str) -> str:
             word = word[: -len(suffix)]
             break
     return word.replace("ó", "o")
+
+
+class InMemoryBm25Index:
+    """BM25 index over an act's units, held in RAM for the duration of one check.
+
+    A unit is indexed with its parent headings, so a chapter title ("Prawo odstąpienia od umowy")
+    also matches the articles under it.
+    """
+
+    def __init__(self, units: list[LegalUnit]):
+        if not units:
+            raise ValueError("Cannot index an act without units")
+        self.units = units
+        self.corpus = [tokenize(" ".join([*unit.hierarchy_path, unit.text])) for unit in units]
+        self.bm25 = BM25Okapi(self.corpus)
