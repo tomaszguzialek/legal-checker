@@ -121,6 +121,32 @@ def test_extract_pdf_text_never_treats_repeated_provisions_as_headers():
     assert [line for line in lines if line.startswith("Art.")] == [f"Art. {n}. (uchylony)" for n in range(1, 5)]
 
 
+def _with_superscript(page: pymupdf.Page, y: float, before: str, superscript: str, after: str) -> None:
+    """Draw a line with a raised 8 pt run, laid out like the Civil Code's "Art. 449¹."."""
+    x = 71 + pymupdf.get_text_length(before, fontsize=12)
+    page.insert_text((71, y), before, fontsize=12)
+    page.insert_text((x, y - 4), superscript, fontsize=8)
+    page.insert_text((x + pymupdf.get_text_length(superscript, fontsize=8), y), after, fontsize=12)
+
+
+def test_extract_pdf_text_keeps_superscript_unit_numbers():
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    _with_superscript(page, 100, "TYTUL VI", "1", "")
+    _with_superscript(page, 120, "Art. 449", "1", ". Kto wytwarza produkt niebezpieczny")
+    _with_superscript(page, 140, "Art. 449", "2", ". Producent odpowiada na podstawie art. 449")
+    _with_superscript(page, 160, "Art. 1059.", "5", " Footnote marker after a full stop")
+    _with_superscript(page, 180, "Kodeks cywilny", "1", " footnote marker after a word")
+
+    assert extract_pdf_text(doc.tobytes()).text.split("\n") == [
+        "TYTUL VI^1",
+        "Art. 449^1. Kto wytwarza produkt niebezpieczny",
+        "Art. 449^2. Producent odpowiada na podstawie art. 449",
+        "Art. 1059. Footnote marker after a full stop",
+        "Kodeks cywilny footnote marker after a word",
+    ]
+
+
 @pytest.mark.parametrize(
     "furniture",
     # Built-in PDF fonts cannot draw an en dash; the pattern accepts both "–" and "-".

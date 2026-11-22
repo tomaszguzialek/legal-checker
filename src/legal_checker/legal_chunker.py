@@ -5,14 +5,14 @@ import re
 from pydantic import BaseModel
 
 # Parent headings, outermost first. A heading is a line of its own: the level keyword and
-# a designator ("Rozdział 5a", "TYTUŁ XXIX", "KSIĘGA PIERWSZA"), followed by the heading's
+# a designator ("Rozdział 5a", "TYTUŁ VI^1", "KSIĘGA PIERWSZA"), followed by the heading's
 # title on the next line(s). The keyword must be capitalised, so a wrapped line of body text
 # ("rozdział 2") is not taken for one.
 _LEVELS = ["Księga", "Tytuł", "Dział", "Rozdział", "Oddział"]
 _HEADING = re.compile(
-    r"^(" + "|".join(f"{level}|{level.upper()}" for level in _LEVELS) + r")\s+(\d+[a-z]*|[IVXLCDM]+[a-z]*|[A-ZĄĆĘŁŃÓŚŹŻ]+)$"
+    r"^(" + "|".join(f"{level}|{level.upper()}" for level in _LEVELS) + r")\s+((?:\d+[a-z]*|[IVXLCDM]+[a-z]*)(?:\^\d+)?|[A-ZĄĆĘŁŃÓŚŹŻ]+)$"
 )
-_ROMAN = re.compile(r"^[IVXLCDM]+[a-z]*$")
+_ROMAN = re.compile(r"[IVXLCDM]+")
 # Start of an article or of a "§" unit (regulations); ends a heading's title.
 _UNIT_START = re.compile(r"^(?:Art\.|§)\s*\d+[a-z]*")
 # Titles span 1-2 lines in practice; more lines after a heading are body text of an untitled one.
@@ -70,6 +70,6 @@ def split_sections(text: str) -> list[Section]:
 
 def _designator(designator: str) -> str:
     """Numbers and Roman numerals as they are, ordinal words in lower case ("PIERWSZA" -> "pierwsza")."""
-    if designator[0].isdigit() or _ROMAN.match(designator):
-        return designator
-    return designator.lower()
+    if designator.isalpha() and not _ROMAN.fullmatch(designator):
+        return designator.lower()
+    return designator

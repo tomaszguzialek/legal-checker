@@ -11,7 +11,7 @@ from legal_checker.eli_client import ActCache, ActContent
 from legal_checker.models import EliRef
 
 # Bump whenever extraction output changes, so text cached by an older version is ignored.
-EXTRACTOR_VERSION = 1
+EXTRACTOR_VERSION = 2
 
 # A span is body text if its font is at least the body size minus this. Smaller spans are
 # footnotes, margin notes, running headers/footers and superscript footnote markers. The
@@ -23,13 +23,19 @@ _SIZE_TOLERANCE = 0.5
 _LINE_TOLERANCE = 3.0
 # A horizontal gap wider than this (pt) between adjacent spans is a word break.
 _WORD_GAP = 1.0
+# Inserted units are numbered with a superscript ("Art. 449¹", "§ 2¹", "TYTUŁ VI¹"), which the
+# size filter would drop. Superscript digits right after a number are written as "449^1".
+# Footnote markers follow a word or a full stop ("Kodeks cywilny¹)", "Art. 1059.⁵") and are left out.
+_SUPERSCRIPT_FLAG = 1
+_SUPERSCRIPT_NUMBER = re.compile(r"\d+")
+_ENDS_WITH_NUMBER = re.compile(r"(?:\d|\b[IVXLCDM]+)$")
 
 _WHITESPACE = re.compile(r"\s+")
 
 # Sanity checks: the size filter fails silently when the layout changes, so suspicious
 # results are reported as warnings instead (they end up in ComplianceResult.warnings).
 _MAX_DROPPED_SHARE = 0.25
-_UNIT_START = re.compile(r"^(?:Art\.|§)\s*\d+[a-z]*\.")
+_UNIT_START = re.compile(r"^(?:Art\.|§)\s*\d+(?:\^\d+)?[a-z]*\.")
 _UNIT_LINE = re.compile(r"^(?:Art\.|§)\s*\d+", re.MULTILINE)
 
 # Running headers/footers repeat on most pages (page numbers aside) as a page's first or
@@ -179,13 +185,29 @@ def _structure_warnings(text: str) -> list[str]:
 
 
 def _text_spans(page: pymupdf.Page) -> list[dict]:
-    return [
-        span
-        for block in page.get_text("dict")["blocks"]
-        for line in block.get("lines", [])
-        for span in line["spans"]
-        if span["text"].strip()
-    ]
+    spans: list[dict] = []
+    for block in page.get_text("dict")["blocks"]:
+        for line in block.get("lines", []):
+            previous = None
+            for span in line["spans"]:
+                if not span["text"].strip():
+                    continue
+                if previous and _is_superscript_number(previous, span):
+                    previous["text"] += "^" + span["text"].lstrip()  # keeps a trailing word break
+                    previous["bbox"] = (*previous["bbox"][:2], span["bbox"][2], previous["bbox"][3])
+                    continue
+                spans.append(span)
+                previous = span
+    return spans
+
+
+def _is_superscript_number(previous: dict, span: dict) -> bool:
+    return bool(
+        span["flags"] & _SUPERSCRIPT_FLAG
+        and _SUPERSCRIPT_NUMBER.fullmatch(span["text"].strip())
+        and _ENDS_WITH_NUMBER.search(previous["text"])
+        and span["bbox"][0] - previous["bbox"][2] < _WORD_GAP
+    )
 
 
 def _dominant_size(spans: list[dict]) -> float:

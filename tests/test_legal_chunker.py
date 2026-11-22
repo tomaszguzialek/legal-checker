@@ -82,3 +82,9 @@ def test_split_sections_caps_title_length():
 
     assert section.hierarchy_path == ["Rozdział 3 Tytuł ciąg dalszy koniec tytułu"]
     assert section.lines == ["Tekst bez artykułu."]
+
+
+def test_split_sections_accepts_superscript_designators():
+    (section,) = split_sections("TYTUŁ VI^1\nOdpowiedzialność za produkt\nArt. 449^1. § 1. Treść.")
+
+    assert section.hierarchy_path == ["Tytuł VI^1 Odpowiedzialność za produkt"]
