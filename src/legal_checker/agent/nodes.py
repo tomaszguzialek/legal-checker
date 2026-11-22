@@ -13,7 +13,7 @@ from langgraph.prebuilt import ToolNode
 from langgraph.prebuilt.tool_node import ToolCallRequest
 
 from legal_checker import legal_chunker
-from legal_checker.agent.prompts import RESEARCH_SYSTEM_PROMPT
+from legal_checker.agent.prompts import EVALUATION_SYSTEM_PROMPT, RESEARCH_SYSTEM_PROMPT
 from legal_checker.agent.state import GraphState
 from legal_checker.agent.tools import format_unit
 from legal_checker.bm25_retriever import LateBoundBm25Index
@@ -25,6 +25,11 @@ from legal_checker.text_extractor import extract_act_text
 
 Node = Callable[[GraphState], dict]
 
+# Attempts of one LLM call that fails with a provider error (rate limit, timeout, 5xx).
+PROVIDER_ATTEMPTS = 2
+# Evaluations in a row that may return a payload violating the schema: the first is retried once.
+MAX_EVAL_ATTEMPTS = 2
+
 # No act token occurs in the fragment at all, but a provision could still apply in other words.
 SHORT_CIRCUIT_CONFIDENCE = 0.9
 SHORT_CIRCUIT_RATIONALE = (
@@ -33,7 +38,15 @@ SHORT_CIRCUIT_RATIONALE = (
     "Wynik ustalono bez wywołania modelu językowego."
 )
 TOOL_LIMIT_WARNING = "Osiągnięto limit wywołań narzędzi agenta"
+SCHEMA_RETRY_MESSAGE = (
+    "Poprzednia odpowiedź nie spełniła wymaganego schematu JSON: {error}\n"
+    "Odpowiedz ponownie, ściśle według schematu."
+)
 TOOL_LIMIT_MESSAGE = "Nie wykonano: osiągnięto limit wywołań narzędzi. Oceń zgodność na podstawie zebranego kontekstu."
+
+
+class EvaluationError(RuntimeError):
+    """The evaluation model failed to return a payload matching the schema, even when retried."""
 
 
 def make_act_nodes(eli: EliClient, index: LateBoundBm25Index, top_k: int) -> dict[str, Node]:
@@ -99,9 +112,11 @@ def make_research_node(research_model: Runnable, max_tool_calls: int) -> Node:
     A reply asking for more tool calls than the budget has left adds ``TOOL_LIMIT_WARNING``.
     """
 
+    model = research_model.with_retry(stop_after_attempt=PROVIDER_ATTEMPTS)
+
     def research(state: GraphState) -> dict:
         prompt = [SystemMessage(RESEARCH_SYSTEM_PROMPT), HumanMessage(context_prompt(state))]
-        reply = research_model.invoke([*prompt, *state.get("messages", [])])
+        reply = model.invoke([*prompt, *state.get("messages", [])])
         update: dict = {"messages": [reply]}
         if len(reply.tool_calls) > remaining_tool_calls(state, max_tool_calls):
             update["warnings"] = [TOOL_LIMIT_WARNING]
@@ -157,6 +172,54 @@ def context_prompt(state: GraphState) -> str:
         f"<document_fragment>\n{state['request'].document_fragment}\n</document_fragment>\n\n"
         f"<legal_provisions>\n{provisions}\n</legal_provisions>"
     )
+
+
+def make_evaluate_node(eval_model: Runnable) -> Node:
+    """The assessment: the structured-output model judges the fragment against all provisions gathered.
+
+    ``eval_model`` returns ``{"raw", "parsed", "parsing_error"}``. A schema violation is recorded in
+    ``schema_errors`` and the evaluation runs again with the error appended, at most
+    ``MAX_EVAL_ATTEMPTS`` times in total; then ``EvaluationError`` ends the graph.
+    """
+    model = eval_model.with_retry(stop_after_attempt=PROVIDER_ATTEMPTS)
+
+    def evaluate(state: GraphState) -> dict:
+        errors = state.get("schema_errors", [])
+        messages = [SystemMessage(EVALUATION_SYSTEM_PROMPT), HumanMessage(evaluation_prompt(state))]
+        if errors:
+            messages.append(HumanMessage(SCHEMA_RETRY_MESSAGE.format(error=errors[-1])))
+        output = model.invoke(messages)
+        attempts = state.get("eval_attempts", 0) + 1
+        if output["parsing_error"] is None and output["parsed"] is not None:
+            return {"llm_payload": output["parsed"], "eval_attempts": attempts}
+        error = str(output["parsing_error"] or "Brak sparsowanej odpowiedzi")
+        if attempts >= MAX_EVAL_ATTEMPTS:
+            raise EvaluationError(
+                f"Model oceny {attempts} razy zwrócił odpowiedź niezgodną ze schematem; ostatni błąd: {error}"
+            )
+        return {"llm_payload": None, "schema_errors": [*errors, error], "eval_attempts": attempts}
+
+    return evaluate
+
+
+def route_after_evaluate(state: GraphState) -> Literal["evaluate", "validate"]:
+    """Retry an evaluation that violated the schema; ``evaluate`` raises once out of attempts."""
+    return "validate" if state.get("llm_payload") is not None else "evaluate"
+
+
+def evaluation_prompt(state: GraphState) -> str:
+    """The research context plus the provisions the tools returned, in a ``<tool_results>`` section.
+
+    Only results that brought provisions are included: "not found" and over-budget replies are noise here.
+    """
+    results = [
+        message.content
+        for message in state.get("messages", [])
+        if isinstance(message, ToolMessage) and message.artifact
+    ]
+    if not results:
+        return context_prompt(state)
+    return context_prompt(state) + "\n\n<tool_results>\n" + "\n\n".join(results) + "\n</tool_results>"
 
 
 def validate(state: GraphState) -> dict:

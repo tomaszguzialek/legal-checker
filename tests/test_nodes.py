@@ -12,15 +12,18 @@ from legal_checker.agent.nodes import (
     SHORT_CIRCUIT_CONFIDENCE,
     TOOL_LIMIT_MESSAGE,
     TOOL_LIMIT_WARNING,
+    EvaluationError,
     make_act_nodes,
+    make_evaluate_node,
     make_research_node,
     make_route_after_research,
     make_tools_node,
+    route_after_evaluate,
     route_after_retrieve,
     short_circuit_na,
     validate,
 )
-from legal_checker.agent.prompts import RESEARCH_SYSTEM_PROMPT
+from legal_checker.agent.prompts import EVALUATION_SYSTEM_PROMPT, RESEARCH_SYSTEM_PROMPT
 from legal_checker.agent.state import GraphState
 from legal_checker.agent.tools import make_tools
 from legal_checker.bm25_retriever import LateBoundBm25Index
@@ -238,3 +241,94 @@ def test_tools_node_runs_calls_in_order_only_up_to_the_budget(eli):
     ]
     assert messages[0].content.startswith("[DU/2014/827:art.38]")
     assert messages[2].content == TOOL_LIMIT_MESSAGE and messages[2].status == "error"
+
+
+PAYLOAD = LlmEvaluationPayload(
+    status=ComplianceStatus.COMPLIANT,
+    confidence=0.9,
+    document_excerpt="w terminie 14 dni",
+    matched_provision="art. 27",
+    rationale="Zapis powtarza ustawowy termin odstąpienia.",
+)
+
+
+def parsed(payload: LlmEvaluationPayload = PAYLOAD) -> dict:
+    return {"raw": AIMessage(payload.model_dump_json()), "parsed": payload, "parsing_error": None}
+
+
+def schema_violation(error: str = "confidence: Input should be less than or equal to 1") -> dict:
+    return {"raw": AIMessage('{"confidence": 7}'), "parsed": None, "parsing_error": ValueError(error)}
+
+
+def scripted(*outputs, calls: list | None = None) -> RunnableLambda:
+    """Evaluation model returning ``outputs`` in turn (raising those that are exceptions), recording its inputs."""
+    remaining = iter(outputs)
+    calls = [] if calls is None else calls
+
+    def respond(messages):
+        calls.append(messages)
+        output = next(remaining)
+        if isinstance(output, Exception):
+            raise output
+        return output
+
+    return RunnableLambda(respond)
+
+
+def test_evaluate_sends_fragment_candidates_and_the_provisions_tools_returned(eli):
+    state = run_act_nodes(eli, WITHDRAWAL)
+    refused = ToolMessage(TOOL_LIMIT_MESSAGE, tool_call_id="c9", artifact=[], status="error")
+    state["messages"] = [*answered("38"), refused]
+    calls = []
+
+    update = make_evaluate_node(scripted(parsed(), calls=calls))(state)
+
+    assert update == {"llm_payload": PAYLOAD, "eval_attempts": 1}
+    assert route_after_evaluate({**state, **update}) == "validate"
+    system, human = calls[0]
+    assert system.content == EVALUATION_SYSTEM_PROMPT
+    assert "</legal_provisions>\n\n<tool_results>\n[DU/2014/827:art.38]\n</tool_results>" in human.content
+    assert TOOL_LIMIT_MESSAGE not in human.content
+
+
+def test_evaluate_without_tool_results_has_no_tool_results_section(eli):
+    calls = []
+
+    make_evaluate_node(scripted(parsed(), calls=calls))(run_act_nodes(eli, WITHDRAWAL))
+
+    assert calls[0][1].content.endswith("</legal_provisions>")
+
+
+def test_evaluate_retries_a_schema_violation_once_with_the_error_attached(eli):
+    state = run_act_nodes(eli, WITHDRAWAL)
+    calls = []
+    evaluate = make_evaluate_node(scripted(schema_violation("confidence too high"), parsed(), calls=calls))
+
+    first = evaluate(state)
+    assert first == {"llm_payload": None, "schema_errors": ["confidence too high"], "eval_attempts": 1}
+    state = {**state, **first}
+    assert route_after_evaluate(state) == "evaluate"
+
+    second = evaluate(state)
+
+    assert second == {"llm_payload": PAYLOAD, "eval_attempts": 2}
+    assert len(calls[1]) == 3 and calls[1][:2] == calls[0]
+    assert calls[1][2].content.startswith("Poprzednia odpowiedź nie spełniła wymaganego schematu JSON: confidence too high")
+
+
+def test_evaluate_raises_evaluation_error_after_the_second_schema_violation(eli):
+    state = run_act_nodes(eli, WITHDRAWAL)
+    evaluate = make_evaluate_node(scripted(schema_violation("first"), schema_violation("second")))
+    state = {**state, **evaluate(state)}
+
+    with pytest.raises(EvaluationError, match="2 razy.*ostatni błąd: second"):
+        evaluate(state)
+
+
+def test_evaluate_retries_a_provider_error_once(eli):
+    calls = []
+
+    update = make_evaluate_node(scripted(ConnectionError("503"), parsed(), calls=calls))(run_act_nodes(eli, WITHDRAWAL))
+
+    assert update["llm_payload"] == PAYLOAD and update["eval_attempts"] == 1
+    assert len(calls) == 2
