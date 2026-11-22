@@ -109,7 +109,7 @@ def test_hint_is_required(capsys):
 
 
 def test_unresolvable_hint_is_reported_without_a_traceback(monkeypatch, capsys):
-    def failing_run(request, settings):
+    def failing_run(request, settings, on_step=None):
         raise ActResolutionError("Nie znaleziono aktu prawnego pasującego do wskazówki: 'xyz'")
 
     monkeypatch.setattr(cli, "run", failing_run)
@@ -129,3 +129,68 @@ def test_too_short_fragment_is_reported_as_an_error(capsys):
 def test_missing_file_is_reported_as_an_error(tmp_path, capsys):
     assert cli.main(["--file", str(tmp_path / "missing.txt"), "--hint", "DU/2014/827"]) == 1
     assert "Błąd:" in capsys.readouterr().err
+
+
+def test_verbose_streams_each_graph_step_to_stderr(fake_models, capsys):
+    exit_code = cli.main(["--text", WITHDRAWAL, "--hint", "DU/2014/827", "--verbose"])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    steps = [line.split()[1] for line in captured.err.splitlines()]
+    assert steps == [
+        "resolve_act", "fetch_act", "chunk_act", "retrieve", "research", "tools", "research", "evaluate", "validate"
+    ]
+    assert "▶ resolve_act akt: DU/2014/827" in captured.err
+    assert "▶ tools get_provision → DU/2014/827:art.30" in captured.err
+    assert "▶ validate wynik: ZGODNY" in captured.err
+    result, _ = split_output(captured.out)  # stdout still starts with the JSON result
+    assert result["status"] == "ZGODNY"
+
+
+def test_without_verbose_no_steps_are_printed(fake_models, capsys):
+    assert cli.main(["--text", WITHDRAWAL, "--hint", "DU/2014/827"]) == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_steps_without_a_model_call_and_with_a_schema_error_are_described():
+    na = cli.describe_step(
+        "short_circuit_na",
+        {"result": type("Result", (), {"status": ComplianceStatus.NOT_APPLICABLE})()},
+    )
+    schema_error = cli.describe_step("evaluate", {"llm_payload": None, "schema_errors": ["status: invalid enum"]})
+
+    assert na == "wynik: NIE DOTYCZY / BRAK PODSTAW DO OCENY"
+    assert schema_error == "błąd schematu: status: invalid enum"
+
+
+def test_show_graph_prints_the_topology_without_building_models(tmp_path, monkeypatch, capsys):
+    def no_models(*_):
+        raise AssertionError("models must not be built for the diagram")
+
+    monkeypatch.setattr(graph_module, "build_models", no_models)
+    monkeypatch.setattr(cli, "get_settings", lambda: Settings(eli_api_base_url=ELI_TEST_URL, cache_dir=tmp_path))
+
+    assert cli.main(["--show-graph"]) == 0
+
+    diagram = capsys.readouterr().out
+    assert diagram.startswith("---") or diagram.startswith("graph TD")
+    for edge in [
+        "__start__ --> resolve_act;",
+        "retrieve -.-> short_circuit_na;",
+        "retrieve -.-> research;",
+        "research -.-> tools;",
+        "research -.-> evaluate;",
+        "tools --> research;",
+        "evaluate -.-> evaluate;",
+        "evaluate -.-> validate;",
+        "validate --> __end__;",
+    ]:
+        assert edge in diagram
+
+
+def test_text_or_file_is_required_without_show_graph(capsys):
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(["--hint", "DU/2014/827"])
+
+    assert exit_info.value.code == 2
+    assert "--text lub --file" in capsys.readouterr().err

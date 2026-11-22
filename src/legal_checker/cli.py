@@ -1,7 +1,8 @@
 """Command-line interface: check a document fragment and print the result (SPEC Task 5.1).
 
 Prints the ``ComplianceResult`` as JSON, then a report for a human: the assessment, the
-provisions the agent saw (``consulted_units``) and the tools it called.
+provisions the agent saw (``consulted_units``) and the tools it called. ``--verbose`` streams
+the graph's steps to stderr; ``--show-graph`` prints the graph's Mermaid diagram instead.
 """
 
 import argparse
@@ -14,7 +15,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from legal_checker.agent.graph import run
+from legal_checker.agent.graph import draw_mermaid, run
 from legal_checker.agent.nodes import EvaluationError
 from legal_checker.agent.state import GraphState
 from legal_checker.config import get_settings
@@ -36,15 +37,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         prog="legal-checker",
         description="Sprawdza zgodność fragmentu dokumentu firmowego z aktem prawnym z API ELI Sejmu.",
     )
-    source = parser.add_mutually_exclusive_group(required=True)
+    source = parser.add_mutually_exclusive_group()
     source.add_argument("--text", help="fragment dokumentu do oceny")
     source.add_argument("--file", type=Path, help="plik UTF-8 z fragmentem dokumentu ('-' czyta ze stdin)")
     parser.add_argument(
         "--hint",
-        required=True,
         help="wskazówka aktu: ELI (DU/2014/827), link ELI, sygnatura (Dz.U. z 2014 r. poz. 827) lub tytuł",
     )
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--show-graph",
+        action="store_true",
+        help="wypisz diagram grafu (Mermaid) i zakończ; nie wymaga --text/--file ani --hint",
+    )
+    parser.add_argument("--verbose", action="store_true", help="wypisuj kolejne kroki grafu na stderr")
+    args = parser.parse_args(argv)
+    if not args.show_graph:
+        if args.text is None and args.file is None:
+            parser.error("wymagany jest jeden z argumentów --text lub --file")
+        if args.hint is None:
+            parser.error("wymagany jest argument --hint")
+    return args
 
 
 def read_fragment(args: argparse.Namespace) -> str:
@@ -72,6 +84,40 @@ def tool_calls(state: GraphState) -> list[tuple[str, dict, list[str] | None]]:
         if isinstance(message, AIMessage)
         for call in message.tool_calls
     ]
+
+
+def describe_step(node: str, update: dict) -> str:
+    """One line on what a graph node did, from its state update."""
+    match node:
+        case "resolve_act":
+            return f"akt: {update['eli_ref'].key}"
+        case "fetch_act":
+            return f"pobrano: {update['act'].title} ({update['act'].source_url})"
+        case "chunk_act":
+            return f"jednostek redakcyjnych: {len(update['units'])}"
+        case "retrieve":
+            candidates = update["candidates"]
+            best = max((score for _, score in candidates), default=0.0)
+            return f"kandydatów BM25: {len(candidates)} (najwyższy wynik: {best:.2f})"
+        case "research":
+            calls = update["messages"][-1].tool_calls
+            if not calls:
+                return "kontekst wystarczający, bez wywołań narzędzi"
+            return "wywołania narzędzi: " + ", ".join(f"{call['name']}({call['args']})" for call in calls)
+        case "tools":
+            return "; ".join(
+                f"{message.name} → {', '.join(message.artifact) or 'brak wyników'}"
+                if message.status != "error"
+                else f"{message.name} → {NOT_RUN}"
+                for message in update["messages"]
+            )
+        case "evaluate":
+            if update.get("llm_payload") is None:
+                return f"błąd schematu: {update['schema_errors'][-1]}"
+            return f"ocena: {update['llm_payload'].status.value}"
+        case "validate" | "short_circuit_na":
+            return f"wynik: {update['result'].status.value}"
+    return ", ".join(update)
 
 
 def print_report(console: Console, state: GraphState) -> None:
@@ -117,9 +163,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     console = Console()
     errors = Console(stderr=True)
+    if args.show_graph:
+        print(draw_mermaid(get_settings()))
+        return 0
+
+    def print_step(node: str, update: dict) -> None:
+        errors.print(f"[bold cyan]▶ {node}[/] {describe_step(node, update)}", highlight=False, soft_wrap=True)
+
     try:
         request = CheckRequest(document_fragment=read_fragment(args), act_hint=args.hint)
-        state = run(request, get_settings())
+        state = run(request, get_settings(), on_step=print_step if args.verbose else None)
     except (OSError, ValidationError, ActResolutionError, EliClientError, EvaluationError) as exc:
         errors.print(f"[bold red]Błąd:[/] {exc}", highlight=False)
         return 1
