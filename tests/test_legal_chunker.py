@@ -1,4 +1,4 @@
-from legal_checker.legal_chunker import chunk_act, split_sections
+from legal_checker.legal_chunker import FALLBACK_CHUNK_CHARS, NO_UNITS_WARNING, chunk_act, split_sections
 
 # Heading layout of the Civil Code (DU/2024/1061) as extracted from its unified-text PDF.
 CIVIL_CODE = """\
@@ -75,6 +75,12 @@ def test_split_sections_ignores_heading_words_in_body_text():
     assert len(section.lines) == 3
 
 
+def test_split_sections_without_titles_keeps_lines_after_headings_as_body():
+    sections = split_sections("Rozdział 1\nZasady ogólne\nTreść.", titles=False)
+
+    assert [(s.hierarchy_path, s.lines) for s in sections] == [(["Rozdział 1"], ["Zasady ogólne", "Treść."])]
+
+
 def test_split_sections_caps_title_length():
     text = "Rozdział 3\nTytuł\nciąg dalszy\nkoniec tytułu\nTekst bez artykułu."
 
@@ -91,7 +97,7 @@ def test_split_sections_accepts_superscript_designators():
 
 
 def test_chunk_act_splits_articles_under_their_headings():
-    units = chunk_act("DU/2024/1061", CIVIL_CODE)
+    units = chunk_act("DU/2024/1061", CIVIL_CODE).units
 
     assert [(u.unit_id, u.article, u.hierarchy_path[-2:]) for u in units] == [
         ("DU/2024/1061:art.1", "1", ["Tytuł I Przepisy wstępne", "Art. 1"]),
@@ -109,7 +115,7 @@ def test_chunk_act_splits_articles_under_their_headings():
 def test_chunk_act_keeps_paragraphs_inside_articles_and_drops_the_act_title():
     text = "Dz. U. 2014 poz. 827\nUSTAWA\nArt. 449^1. § 1. Kto wytwarza produkt.\n§ 2. Produktem jest rzecz.\nArt. 449^2. Treść."
 
-    units = chunk_act("DU/2014/827", text)
+    units = chunk_act("DU/2014/827", text).units
 
     assert [u.unit_id for u in units] == ["DU/2014/827:art.449^1", "DU/2014/827:art.449^2"]
     assert units[0].text == "Art. 449^1. § 1. Kto wytwarza produkt.\n§ 2. Produktem jest rzecz."
@@ -119,7 +125,7 @@ def test_chunk_act_keeps_paragraphs_inside_articles_and_drops_the_act_title():
 def test_chunk_act_handles_inserted_and_ranged_articles():
     text = "Art. 43k. Treść.\nArt. 44–50. (pominięte)\nArt. 51. Do umów zawartych\nprzed dniem wejścia w życie."
 
-    units = chunk_act("DU/2014/827", text)
+    units = chunk_act("DU/2014/827", text).units
 
     assert [u.article for u in units] == ["43k", "44–50", "51"]
     assert units[1].text == "Art. 44–50. (pominięte)"
@@ -129,13 +135,13 @@ def test_chunk_act_handles_inserted_and_ranged_articles():
 def test_chunk_act_ignores_article_references_at_line_start():
     text = "Art. 7. Przepis stosuje się do umów, o których mowa w\nart. 5, oraz\nArt. 6 ust. 2.\nArt. 8. Treść."
 
-    assert [u.article for u in chunk_act("DU/2014/827", text)] == ["7", "8"]
+    assert [u.article for u in chunk_act("DU/2014/827", text).units] == ["7", "8"]
 
 
 def test_chunk_act_splits_regulations_by_paragraph_units():
     text = "ROZPORZĄDZENIE\nRozdział 1\nPrzepisy ogólne\n§ 1. Rozporządzenie określa wzór.\n§ 2. Wzór stanowi\nzałącznik."
 
-    units = chunk_act("DU/2023/100", text)
+    units = chunk_act("DU/2023/100", text).units
 
     assert [(u.unit_id, u.article, u.hierarchy_path) for u in units] == [
         ("DU/2023/100:par.1", "1", ["Rozdział 1 Przepisy ogólne", "§ 1"]),
@@ -156,7 +162,7 @@ b) adresie;
 2. Informacje, o których mowa w ust. 1 pkt 2, stanowią
 integralną część umowy."""
 
-    (unit,) = chunk_act("DU/2014/827", text)
+    (unit,) = chunk_act("DU/2014/827", text).units
 
     assert unit.text.split("\n") == [
         "Art. 12. 1. Najpóźniej w chwili wyrażenia przez konsumenta woli związania się "
@@ -176,7 +182,7 @@ def test_chunk_act_keeps_wrapped_lines_starting_with_numbers_or_dashes_in_place(
         "14 maja 2014 r., o której mowa w art.\n5 ust. 2 pkt 10–\n20."
     )
 
-    (unit,) = chunk_act("DU/2014/827", text)
+    (unit,) = chunk_act("DU/2014/827", text).units
 
     assert unit.text.split("\n") == [
         "Art. 2. Określenia użyte w ustawie oznaczają:",
@@ -190,7 +196,7 @@ LONG = "Przedsiębiorca jest obowiązany poinformować konsumenta o prawie odst�
 def test_chunk_act_splits_long_articles_into_paragraphs_with_article_context():
     text = f"Rozdział 4\nPrawo odstąpienia od umowy\nArt. 39. 1. {LONG}\n1) {LONG}\n2. {LONG}\n3. {LONG}\nArt. 40. 1. {LONG}"
 
-    units = chunk_act("DU/2014/827", text, max_unit_chars=300)
+    units = chunk_act("DU/2014/827", text, max_unit_chars=300).units
 
     assert [(u.unit_id, u.article, u.paragraph, u.hierarchy_path) for u in units] == [
         ("DU/2014/827:art.39.ust.1", "39", "1", ["Rozdział 4 Prawo odstąpienia od umowy", "Art. 39", "ust. 1"]),
@@ -205,7 +211,7 @@ def test_chunk_act_splits_long_articles_into_paragraphs_with_article_context():
 def test_chunk_act_splits_long_code_articles_by_section_sign():
     text = f"Art. 385^1. § 1. {LONG}\n§ 2. {LONG}\n§ 3. {LONG}"
 
-    units = chunk_act("DU/2024/1061", text, max_unit_chars=200)
+    units = chunk_act("DU/2024/1061", text, max_unit_chars=200).units
 
     assert [u.unit_id for u in units] == [f"DU/2024/1061:art.385^1.par.{n}" for n in (1, 2, 3)]
     assert units[2].text == f"Art. 385^1. § 3. {LONG}"
@@ -215,7 +221,7 @@ def test_chunk_act_splits_long_code_articles_by_section_sign():
 def test_chunk_act_keeps_long_articles_without_paragraphs_whole():
     text = f"Art. 2. Określenia użyte w ustawie oznaczają:\n1) {LONG}\n2) {LONG}\n3) {LONG}"
 
-    (unit,) = chunk_act("DU/2014/827", text, max_unit_chars=100)
+    (unit,) = chunk_act("DU/2014/827", text, max_unit_chars=100).units
 
     assert unit.unit_id == "DU/2014/827:art.2"
     assert unit.paragraph is None
@@ -224,9 +230,55 @@ def test_chunk_act_keeps_long_articles_without_paragraphs_whole():
 def test_chunk_act_splits_long_regulation_units_by_subparagraphs():
     text = f"§ 3. 1. {LONG}\n2. {LONG}"
 
-    units = chunk_act("DU/2023/100", text, max_unit_chars=100)
+    units = chunk_act("DU/2023/100", text, max_unit_chars=100).units
 
     assert [(u.unit_id, u.text[:8]) for u in units] == [
         ("DU/2023/100:par.3.ust.1", "§ 3. 1. "),
         ("DU/2023/100:par.3.ust.2", "§ 3. 2. "),
     ]
+
+
+def test_chunk_act_warns_only_without_recognisable_units():
+    assert chunk_act("DU/2024/1061", CIVIL_CODE).warnings == []
+    assert chunk_act("DU/2023/100", "§ 1. Rozporządzenie określa wzór.").warnings == []
+
+    result = chunk_act("MP/2023/100", "OBWIESZCZENIE\nOgłasza się tekst komunikatu.")
+
+    assert result.warnings == [NO_UNITS_WARNING]
+    assert [(u.unit_id, u.article, u.hierarchy_path, u.text) for u in result.units] == [
+        ("MP/2023/100:akapit.1", "1", ["Akapit 1"], "OBWIESZCZENIE Ogłasza się tekst komunikatu."),
+    ]
+
+
+def test_chunk_act_fallback_packs_whole_paragraphs_into_chunks():
+    # Each line ends a sentence and the next starts with a capital: a possible paragraph break.
+    sentences = [f"Zdanie {n}. {LONG}" for n in range(30)]
+    wrapped = ["Ostatni akapit zawinięty w środku", "zdania, który nie może zostać rozdzielony."]
+
+    units = chunk_act("MP/2023/100", "\n".join(sentences + wrapped)).units
+
+    assert len(units) > 1
+    assert all(len(u.text) >= FALLBACK_CHUNK_CHARS for u in units[:-1])
+    assert " ".join(u.text for u in units) == " ".join(sentences + wrapped)
+    assert units[-1].text.endswith("w środku zdania, który nie może zostać rozdzielony.")
+    assert [u.unit_id for u in units] == [f"MP/2023/100:akapit.{n}" for n in range(1, len(units) + 1)]
+
+
+def test_chunk_act_fallback_keeps_parent_headings():
+    text = "Wstęp komunikatu.\nRozdział 1\nZasady ogólne\nTreść zasad.\nRozdział 2\nPrzepisy końcowe\nTreść\nprzepisów."
+
+    units = chunk_act("MP/2023/100", text).units
+
+    assert [(u.hierarchy_path, u.text) for u in units] == [
+        (["Akapit 1"], "Wstęp komunikatu."),
+        # Without units nothing marks where a title ends: it stays in the text, never lost.
+        (["Rozdział 1", "Akapit 2"], "Zasady ogólne Treść zasad."),
+        (["Rozdział 2", "Akapit 3"], "Przepisy końcowe Treść przepisów."),
+    ]
+
+
+def test_chunk_act_empty_text():
+    result = chunk_act("MP/2023/100", "")
+
+    assert result.units == []
+    assert result.warnings == [NO_UNITS_WARNING]

@@ -2,7 +2,7 @@
 
 import re
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from legal_checker.models import LegalUnit
 
@@ -35,8 +35,21 @@ _CODE_PARAGRAPH = re.compile(rf"^§\s*({_NUMBER})\.\s")
 _ELEMENT_START = re.compile(rf"^(?:Art\.\s*\d|§\s*\d|{_NUMBER}[.)]\s|[a-z]{{1,2}}\)\s)")
 # A range wrapped after its dash ("pkt 10–" / "20") is rejoined without a space.
 _OPEN_RANGE = re.compile(r"\d[–-]$")
+# Fallback for text without "Art." / "§" units: chunks of whole paragraphs, each at least
+# this long. The text has no paragraph marks, so a paragraph ends at a line ending a sentence
+# followed by a line starting with a capital letter.
+FALLBACK_CHUNK_CHARS = 1000
+_SENTENCE_END = re.compile(r"[.!?]$")
+NO_UNITS_WARNING = "Nie rozpoznano jednostek „Art.” ani „§” w tekście aktu; podzielono go na akapity"
 # Titles span 1-2 lines in practice; more lines after a heading are body text of an untitled one.
 _MAX_TITLE_LINES = 3
+
+
+class ChunkedAct(BaseModel):
+    """Units of an act and chunking warnings (they end up in ComplianceResult.warnings)."""
+
+    units: list[LegalUnit]
+    warnings: list[str] = Field(default_factory=list)
 
 
 class Section(BaseModel):
@@ -46,11 +59,12 @@ class Section(BaseModel):
     lines: list[str]
 
 
-def split_sections(text: str) -> list[Section]:
+def split_sections(text: str, titles: bool = True) -> list[Section]:
     """Walk the text line by line, keeping a stack of the enclosing parent headings.
 
     A heading closes every open heading of its own or a lower level. Text before the first
-    heading (the act's title) gets an empty path.
+    heading (the act's title) gets an empty path. A heading's title ends at the next unit
+    ("Art.", "§"); without ``titles`` the lines after a heading are all body text.
     """
     sections: list[Section] = []
     stack: list[tuple[int, str]] = []  # (level index, label with title)
@@ -70,6 +84,8 @@ def split_sections(text: str) -> list[Section]:
             lines.clear()
 
     for line in text.split("\n"):
+        if not line.strip():
+            continue
         if heading := _HEADING.match(line):
             close_heading()
             flush()
@@ -77,7 +93,7 @@ def split_sections(text: str) -> list[Section]:
             while stack and stack[-1][0] >= level:
                 stack.pop()
             stack.append((level, f"{_LEVELS[level]} {_designator(heading[2])}"))
-            title = []
+            title = [] if titles else None
         elif title is not None and not _UNIT_START.match(line) and len(title) < _MAX_TITLE_LINES:
             title.append(line)
         else:
@@ -95,16 +111,26 @@ def _designator(designator: str) -> str:
     return designator
 
 
-def chunk_act(eli: str, text: str, max_unit_chars: int = MAX_UNIT_CHARS) -> list[LegalUnit]:
+def chunk_act(eli: str, text: str, max_unit_chars: int = MAX_UNIT_CHARS) -> ChunkedAct:
     """Split an act into its articles (or "§" units of a regulation), each with its parent headings.
 
     Each paragraph, point and letter of a unit starts on a new line. Units longer than
     ``max_unit_chars`` are split into their paragraphs, if they have any. Text before the
-    first unit of a section (the act's title, preamble) is not part of any unit.
+    first unit of a section (the act's title, preamble) is not part of any unit. Text without
+    any such units is split into paragraphs instead, with a warning.
     """
     sections = split_sections(text)
-    uses_articles = any(_ARTICLE.match(line) for section in sections for line in section.lines)
-    boundary, label, id_prefix = (_ARTICLE, "Art.", "art.") if uses_articles else (_PARAGRAPH_UNIT, "§", "par.")
+
+    def has(pattern: re.Pattern) -> bool:
+        return any(pattern.match(line) for section in sections for line in section.lines)
+
+    if uses_articles := has(_ARTICLE):
+        boundary, label, id_prefix = _ARTICLE, "Art.", "art."
+    elif has(_PARAGRAPH_UNIT):
+        boundary, label, id_prefix = _PARAGRAPH_UNIT, "§", "par."
+    else:
+        # Without units nothing ends a heading's title, which would swallow body text.
+        return ChunkedAct(units=_paragraph_chunks(eli, split_sections(text, titles=False)), warnings=[NO_UNITS_WARNING])
 
     units: list[LegalUnit] = []
     for hierarchy_path, start, lines in _unit_lines(sections, boundary):
@@ -131,7 +157,7 @@ def chunk_act(eli: str, text: str, max_unit_chars: int = MAX_UNIT_CHARS) -> list
                     }
                 )
             )
-    return units
+    return ChunkedAct(units=units)
 
 
 def _unit_lines(sections: list[Section], boundary: re.Pattern) -> list[tuple[list[str], re.Match, list[str]]]:
@@ -148,8 +174,40 @@ def _unit_lines(sections: list[Section], boundary: re.Pattern) -> list[tuple[lis
             elif _ELEMENT_START.match(line):
                 lines.append(line)
             else:
-                lines[-1] += ("" if _OPEN_RANGE.search(lines[-1]) and line[0].isdigit() else " ") + line
+                lines[-1] = _join_wrapped(lines[-1], line)
     return units
+
+
+def _paragraph_chunks(eli: str, sections: list[Section]) -> list[LegalUnit]:
+    """Fallback units: each section's text in chunks of whole paragraphs (``FALLBACK_CHUNK_CHARS``)."""
+    chunks: list[tuple[list[str], str]] = []
+    for section in sections:
+        chunk: str | None = None
+        for line in section.lines:
+            if chunk is None:
+                chunk = line
+            elif len(chunk) >= FALLBACK_CHUNK_CHARS and _SENTENCE_END.search(chunk) and line[0].isupper():
+                chunks.append((section.hierarchy_path, chunk))
+                chunk = line
+            else:
+                chunk = _join_wrapped(chunk, line)
+        if chunk is not None:
+            chunks.append((section.hierarchy_path, chunk))
+    return [
+        LegalUnit(
+            unit_id=f"{eli}:akapit.{number}",
+            eli=eli,
+            article=str(number),
+            hierarchy_path=[*hierarchy_path, f"Akapit {number}"],
+            text=chunk,
+        )
+        for number, (hierarchy_path, chunk) in enumerate(chunks, start=1)
+    ]
+
+
+def _join_wrapped(text: str, line: str) -> str:
+    """Append a line the PDF wrapped mid-sentence."""
+    return text + ("" if _OPEN_RANGE.search(text) and line[0].isdigit() else " ") + line
 
 
 def _split_paragraphs(
