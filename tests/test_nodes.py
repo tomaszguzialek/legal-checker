@@ -1,3 +1,5 @@
+from datetime import date
+
 import pytest
 from langchain_core.language_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -112,7 +114,7 @@ def test_validate_attaches_metadata_and_everything_the_agent_saw(eli, cached_act
         "act_title": "Ustawa z dnia 30 maja 2014 r. o prawach konsumenta",
         "eli": "DU/2014/827",
         "provision": "art. 27",
-        "as_of_date": cached_act.fetched_at.date().isoformat(),
+        "as_of_date": date.today().isoformat(),
         "source_url": cached_act.content.url,
     }
     assert result.consulted_units == [*candidate_ids, "DU/2014/827:art.38"]

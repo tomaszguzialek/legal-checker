@@ -74,7 +74,7 @@ class LegalBasis(BaseModel):
     act_title: str
     eli: str
     provision: str | None
-    as_of_date: str  # ISO YYYY-MM-DD (fetch date / current legal state)
+    as_of_date: str  # ISO YYYY-MM-DD (date of the assessment: the law as it stands that day)
     source_url: str
 
 
