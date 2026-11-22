@@ -1,5 +1,8 @@
 """The compliance-check StateGraph and its entry point (SPEC Task 4.3, topology in section 3.5)."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
@@ -63,18 +66,27 @@ def build_graph(
     return graph.compile()
 
 
-def check(request: CheckRequest, settings: Settings | None = None) -> ComplianceResult:
-    """Check a document fragment against the act its hint points to.
-
-    Creates the request's index, tools and models, then runs the graph. Raises ``ActResolutionError``,
-    ``EliClientError`` or ``EvaluationError`` when the act cannot be found or fetched, or the
-    model keeps violating the output schema.
-    """
-    settings = settings or get_settings()
+@contextmanager
+def request_graph(settings: Settings) -> Iterator[CompiledStateGraph]:
+    """The graph for one request, with its own index, tools and models; the ELI client closes on exit."""
     index = LateBoundBm25Index()
     tools = make_tools(index)
     research_model, eval_model = build_models(settings, tools)
     with EliClient.from_settings(settings) as eli:
-        graph = build_graph(research_model, eval_model, tools, eli=eli, index=index, settings=settings)
-        state = graph.invoke({"request": request}, config={"recursion_limit": settings.graph_recursion_limit})
-    return state["result"]
+        yield build_graph(research_model, eval_model, tools, eli=eli, index=index, settings=settings)
+
+
+def run(request: CheckRequest, settings: Settings | None = None) -> GraphState:
+    """Run the graph for a request and return its final state (the result plus the agent's messages).
+
+    Raises ``ActResolutionError``, ``EliClientError`` or ``EvaluationError`` when the act cannot be
+    found or fetched, or the model keeps violating the output schema.
+    """
+    settings = settings or get_settings()
+    with request_graph(settings) as graph:
+        return graph.invoke({"request": request}, config={"recursion_limit": settings.graph_recursion_limit})
+
+
+def check(request: CheckRequest, settings: Settings | None = None) -> ComplianceResult:
+    """Check a document fragment against the act its hint points to; raises as ``run`` does."""
+    return run(request, settings)["result"]
