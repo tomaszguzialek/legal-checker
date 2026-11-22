@@ -91,12 +91,17 @@ class ActCache:
     fetch time) and the raw ``content.pdf`` / ``content.html``. Entries older than
     ``max_age`` count as misses, so the act's current wording is re-fetched;
     ``max_age=None`` never expires (e.g. offline test runs on a prepared cache).
+
+    Data derived from an act (e.g. its extracted text) is stored next to it as
+    ``derived-<name>`` files. It is only served while the act entry is valid and is
+    deleted whenever the act is stored again.
     """
 
     def __init__(self, cache_dir: Path, max_age: timedelta | None = timedelta(days=1)):
         self.root = Path(cache_dir) / "eli"
         self.max_age = max_age
         self._memory: dict[str, FetchedAct] = {}
+        self._derived: dict[tuple[str, str], str] = {}
 
     def get(self, ref: EliRef) -> FetchedAct | None:
         act = self._memory.get(ref.key) or self._read(ref)
@@ -108,12 +113,35 @@ class ActCache:
     def put(self, ref: EliRef, act: FetchedAct) -> None:
         directory = self._dir(ref)
         directory.mkdir(parents=True, exist_ok=True)
+        for stale in directory.glob("derived-*"):
+            stale.unlink()
+        self._derived = {k: v for k, v in self._derived.items() if k[0] != ref.key}
         (directory / self._content_file(act.content)).write_bytes(act.content.data)
         # act.json is written last and atomically: its presence marks a complete entry.
         tmp = directory / "act.json.tmp"
         tmp.write_text(act.model_dump_json(by_alias=True, exclude={"content": {"data"}}, indent=2), encoding="utf-8")
         tmp.replace(directory / "act.json")
         self._memory[ref.key] = act
+
+    def get_derived(self, ref: EliRef, name: str) -> str | None:
+        """Return data derived from the act under ``name``, if the act entry is still valid."""
+        if self.get(ref) is None:
+            return None
+        if (ref.key, name) not in self._derived:
+            try:
+                self._derived[(ref.key, name)] = (self._dir(ref) / f"derived-{name}").read_text(encoding="utf-8")
+            except OSError:
+                return None
+        return self._derived[(ref.key, name)]
+
+    def put_derived(self, ref: EliRef, name: str, data: str) -> None:
+        """Store data derived from the act under ``name``; a no-op if the act is not cached."""
+        if self.get(ref) is None:
+            return
+        tmp = self._dir(ref) / f"derived-{name}.tmp"
+        tmp.write_text(data, encoding="utf-8")
+        tmp.replace(self._dir(ref) / f"derived-{name}")
+        self._derived[(ref.key, name)] = data
 
     def _read(self, ref: EliRef) -> FetchedAct | None:
         directory = self._dir(ref)

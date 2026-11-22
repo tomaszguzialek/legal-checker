@@ -265,3 +265,29 @@ def test_fetch_act_ignores_damaged_cache_entry(tmp_path, metadata_json, damage):
 def test_from_settings_enables_cache_in_cache_dir(tmp_path):
     with EliClient.from_settings(Settings(eli_api_base_url=BASE_URL, cache_dir=tmp_path)) as eli:
         assert eli.cache is not None and eli.cache.root == tmp_path / "eli"
+
+
+@respx.mock
+def test_derived_data_lives_and_dies_with_the_act_entry(tmp_path, metadata_json):
+    meta_route, _ = _mock_consumer_rights_act(metadata_json)
+    cache = ActCache(tmp_path)
+    cache.put_derived(CONSUMER_RIGHTS, "extracted.json", "ignored")  # act not cached yet: no-op
+    assert cache.get_derived(CONSUMER_RIGHTS, "extracted.json") is None
+
+    with EliClient(BASE_URL, cache=cache) as eli:
+        act = eli.fetch_act(CONSUMER_RIGHTS)
+    cache.put_derived(CONSUMER_RIGHTS, "extracted.json", '{"text": "Art. 1."}')
+
+    assert cache.get_derived(CONSUMER_RIGHTS, "extracted.json") == '{"text": "Art. 1."}'
+    assert ActCache(tmp_path).get_derived(CONSUMER_RIGHTS, "extracted.json") == '{"text": "Art. 1."}'  # from disk
+    assert ActCache(tmp_path).get_derived(CONSUMER_RIGHTS, "other.json") is None
+
+    stale = act.model_copy(update={"fetched_at": datetime.now(UTC) - timedelta(days=2)})
+    expired_cache = ActCache(tmp_path)
+    expired_cache._memory[CONSUMER_RIGHTS.key] = stale
+    assert expired_cache.get_derived(CONSUMER_RIGHTS, "extracted.json") is None  # act expired
+
+    cache.put(CONSUMER_RIGHTS, act)  # act stored again (re-fetched): derived data is stale
+    assert cache.get_derived(CONSUMER_RIGHTS, "extracted.json") is None
+    assert not list((tmp_path / "eli" / "DU_2014_827").glob("derived-*"))
+    assert meta_route.call_count == 1

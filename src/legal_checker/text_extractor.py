@@ -7,7 +7,11 @@ import pymupdf
 from bs4 import BeautifulSoup, NavigableString
 from pydantic import BaseModel, Field
 
-from legal_checker.eli_client import ActContent
+from legal_checker.eli_client import ActCache, ActContent
+from legal_checker.models import EliRef
+
+# Bump whenever extraction output changes, so text cached by an older version is ignored.
+EXTRACTOR_VERSION = 1
 
 # A span is body text if its font is at least the body size minus this. Smaller spans are
 # footnotes, margin notes, running headers/footers and superscript footnote markers. The
@@ -61,6 +65,20 @@ class ExtractedText(BaseModel):
 
     text: str
     warnings: list[str] = Field(default_factory=list)
+
+
+def extract_act_text(ref: EliRef, content: ActContent, cache: ActCache | None = None) -> ExtractedText:
+    """Extract an act's text, reusing the result cached next to the act if there is one."""
+    name = f"extracted-v{EXTRACTOR_VERSION}.json"
+    if cache and (cached := cache.get_derived(ref, name)):
+        try:
+            return ExtractedText.model_validate_json(cached)
+        except ValueError:  # corrupted entry: extract again
+            pass
+    result = extract_text(content)
+    if cache:
+        cache.put_derived(ref, name, result.model_dump_json())
+    return result
 
 
 def extract_text(content: ActContent) -> ExtractedText:

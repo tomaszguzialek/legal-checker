@@ -1,8 +1,18 @@
+from datetime import UTC, datetime
+
 import pymupdf
 import pytest
 
-from legal_checker.eli_client import ActContent, TextSource
-from legal_checker.text_extractor import extract_html_text, extract_pdf_text, extract_text
+from legal_checker import text_extractor
+from legal_checker.eli_client import ActCache, ActContent, ActMetadata, FetchedAct, TextSource
+from legal_checker.models import EliRef
+from legal_checker.text_extractor import (
+    EXTRACTOR_VERSION,
+    extract_act_text,
+    extract_html_text,
+    extract_pdf_text,
+    extract_text,
+)
 
 
 def _unified_text_pdf() -> bytes:
@@ -272,3 +282,32 @@ def test_extract_text_dispatches_on_media_type(kind, media_type, data, expected_
     )
 
     assert extract_text(content).text.split("\n")[0] == expected_first_line
+
+
+def test_extract_act_text_caches_result_next_to_the_act(tmp_path, monkeypatch):
+    ref = EliRef(publisher="DU", year=2014, position=827)
+    content = ActContent(
+        source=TextSource(eli=ref.key, kind="html", path="/acts/DU/2014/827/text.html"),
+        url="https://eli-api.test/eli/acts/DU/2014/827/text.html",
+        media_type="text/html",
+        data=ACT_HTML.encode(),
+    )
+    metadata = ActMetadata(ELI=ref.key, title="Ustawa", type="Ustawa", status="obowiązujący")
+    cache = ActCache(tmp_path)
+    cache.put(ref, FetchedAct(metadata=metadata, content=content, fetched_at=datetime.now(UTC)))
+    calls = []
+    monkeypatch.setattr(text_extractor, "extract_text", lambda c: calls.append(c) or extract_text(c))
+
+    first = extract_act_text(ref, content, cache)
+    from_ram = extract_act_text(ref, content, cache)
+    from_disk = extract_act_text(ref, content, ActCache(tmp_path))
+    without_cache = extract_act_text(ref, content)
+
+    assert first == from_ram == from_disk == without_cache
+    assert first.text.startswith("Ustawa z dnia 30 maja 2014 r.")
+    assert len(calls) == 2  # first call and the uncached one
+    assert (tmp_path / "eli" / "DU_2014_827" / f"derived-extracted-v{EXTRACTOR_VERSION}.json").exists()
+
+    (tmp_path / "eli" / "DU_2014_827" / f"derived-extracted-v{EXTRACTOR_VERSION}.json").write_text("{broken")
+    assert extract_act_text(ref, content, ActCache(tmp_path)) == first  # corrupted entry: extracted again
+    assert len(calls) == 3
