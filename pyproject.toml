@@ -21,6 +21,7 @@ dependencies = [
 anthropic = ["langchain-anthropic"]
 openai = ["langchain-openai"]
 google = ["langchain-google-genai"]
+groq = ["langchain-groq"]
 
 [dependency-groups]
 dev = [
