@@ -4,6 +4,8 @@ import re
 
 from pydantic import BaseModel
 
+from legal_checker.models import LegalUnit
+
 # Parent headings, outermost first. A heading is a line of its own: the level keyword and
 # a designator ("Rozdział 5a", "TYTUŁ VI^1", "KSIĘGA PIERWSZA"), followed by the heading's
 # title on the next line(s). The keyword must be capitalised, so a wrapped line of body text
@@ -15,6 +17,12 @@ _HEADING = re.compile(
 _ROMAN = re.compile(r"[IVXLCDM]+")
 # Start of an article or of a "§" unit (regulations); ends a heading's title.
 _UNIT_START = re.compile(r"^(?:Art\.|§)\s*\d+[a-z]*")
+# Unit boundaries. Articles may be inserted ("43a", "449^1") or listed as a range when
+# repealed ("Art. 44–50. (pominięte)"). "§" starts a unit only in acts without articles
+# (regulations); in codes it numbers the paragraphs of an article ("Art. 8. § 1.").
+_NUMBER = r"\d+[a-z]*(?:\^\d+[a-z]*)?"
+_ARTICLE = re.compile(rf"^Art\.\s*({_NUMBER}(?:\s*[–-]\s*{_NUMBER})?)\.")
+_PARAGRAPH_UNIT = re.compile(rf"^§\s*({_NUMBER})\.")
 # Titles span 1-2 lines in practice; more lines after a heading are body text of an untitled one.
 _MAX_TITLE_LINES = 3
 
@@ -73,3 +81,31 @@ def _designator(designator: str) -> str:
     if designator.isalpha() and not _ROMAN.fullmatch(designator):
         return designator.lower()
     return designator
+
+
+def chunk_act(eli: str, text: str) -> list[LegalUnit]:
+    """Split an act into its articles (or "§" units of a regulation), each with its parent headings.
+
+    Text before the first unit of a section (the act's title, preamble) is not part of any unit.
+    """
+    sections = split_sections(text)
+    uses_articles = any(_ARTICLE.match(line) for section in sections for line in section.lines)
+    boundary, label, id_prefix = (_ARTICLE, "Art.", "art.") if uses_articles else (_PARAGRAPH_UNIT, "§", "par.")
+
+    units: list[LegalUnit] = []
+    for section in sections:
+        current: LegalUnit | None = None
+        for line in section.lines:
+            if start := boundary.match(line):
+                number = re.sub(r"\s+", "", start[1])
+                current = LegalUnit(
+                    unit_id=f"{eli}:{id_prefix}{number}",
+                    eli=eli,
+                    article=number,
+                    hierarchy_path=[*section.hierarchy_path, f"{label} {number}"],
+                    text=line,
+                )
+                units.append(current)
+            elif current:
+                current.text += "\n" + line
+    return units
