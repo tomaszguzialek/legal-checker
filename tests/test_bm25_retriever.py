@@ -108,6 +108,14 @@ def test_search_adds_every_paragraph_of_a_referenced_article_but_not_other_acts(
     assert [u.unit_id for u, _ in results] == ["DU/2014/827:art.44", "DU/2014/827:art.43.ust.1", "DU/2014/827:art.43.ust.2"]
 
 
+def test_search_adds_only_the_referenced_paragraph_of_a_split_article():
+    units = [*ACT, unit("45", "Art. 45. Wymogi, o których mowa w art. 43 ust. 2, dotyczą umów najmu.")]
+
+    results = InMemoryBm25Index(units).search("umowa najmu", top_k=1)
+
+    assert [u.unit_id for u, _ in results] == ["DU/2014/827:art.45", "DU/2014/827:art.43.ust.2"]
+
+
 def test_search_does_not_duplicate_referenced_articles_already_found():
     results = InMemoryBm25Index(ACT).search("termin odstąpienia", top_k=12)
 
@@ -137,3 +145,4 @@ def test_get_returns_a_paragraph_or_the_whole_split_article():
 
 def test_get_returns_an_article_kept_whole_for_any_of_its_paragraphs():
     assert InMemoryBm25Index(ACT).get("27", "1").unit_id == "DU/2014/827:art.27"
+

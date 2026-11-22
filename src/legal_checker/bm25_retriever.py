@@ -30,9 +30,10 @@ _SUFFIXES = sorted(
 # A reference to an article of the same act: "o którym mowa w art. 27", "art. 43^1 ust. 2 pkt 1".
 # References to other acts ("art. 385^1 Kodeksu cywilnego", "art. 6 ust. 1 rozporządzenia 2016/679")
 # are skipped: the act's name follows the number and its paragraph, point and letter.
+# Groups: article number, paragraph number (if given).
 _NUMBER = r"\d+[a-z]*(?:\^\d+[a-z]*)?"
 _REFERENCE = re.compile(
-    rf"\bart\.\s*({_NUMBER})(?![\w^])"
+    rf"\bart\.\s*({_NUMBER})(?![\w^])(?:\s+ust\.\s*({_NUMBER})(?![\w^]))?"
     r"(?!(?:\s+(?:ust\.|pkt|lit\.)\s*[\w^]+)*\s+(?:ustaw|kodeks|rozporządze|dyrektyw|k\.\s?[a-z]\.))",
     re.IGNORECASE,
 )
@@ -81,17 +82,18 @@ class InMemoryBm25Index:
 
         Units sharing no token with the query are left out. Units of articles referenced by
         the top results ("o którym mowa w art. 27") follow them with their own scores, even
-        if that makes the list longer than ``top_k``.
+        if that makes the list longer than ``top_k``. Of an article split into paragraphs, only
+        the referenced paragraph is added ("art. 39 ust. 3"), or all of them if none is named.
         """
         scores = self.bm25.get_scores(tokenize(query))
         ranked = sorted((i for i, score in enumerate(scores) if score > 0), key=lambda i: -scores[i])
         found = ranked[:top_k]
-        referenced = [
-            i
-            for article in self._references([self.units[i] for i in found])
-            for i in self._by_article.get(article, [])
-            if i not in found
-        ]
+        referenced: list[int] = []
+        for article, paragraph in self._references([self.units[i] for i in found]):
+            for i in self._by_article.get(article, []):
+                if paragraph is None or self.units[i].paragraph in (None, paragraph):
+                    if i not in found and i not in referenced:
+                        referenced.append(i)
         return [(self.units[i], float(scores[i])) for i in found + referenced]
 
     def get(self, article: str, paragraph: str | None = None) -> LegalUnit | None:
@@ -119,14 +121,14 @@ class InMemoryBm25Index:
         )
 
     @staticmethod
-    def _references(units: list[LegalUnit]) -> list[str]:
-        """Numbers of the articles the units refer to, in order of appearance, without their own."""
-        articles: list[str] = []
+    def _references(units: list[LegalUnit]) -> list[tuple[str, str | None]]:
+        """(article, paragraph) the units refer to, in order of appearance, without their own article."""
+        references: list[tuple[str, str | None]] = []
         for unit in units:
             for match in _REFERENCE.finditer(unit.text):
-                if match[1] != unit.article and match[1] not in articles:
-                    articles.append(match[1])
-        return articles
+                if match[1] != unit.article and (reference := (match[1], match[2])) not in references:
+                    references.append(reference)
+        return references
 
 
 def _normalize_number(number: str) -> str:
