@@ -1,6 +1,9 @@
 """The compliance-check StateGraph and its entry point (SPEC Task 4.3, topology in section 3.5)."""
 
-from langchain_core.runnables import Runnable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+
+from langchain_core.runnables import Runnable, RunnableLambda
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -63,18 +66,58 @@ def build_graph(
     return graph.compile()
 
 
-def check(request: CheckRequest, settings: Settings | None = None) -> ComplianceResult:
-    """Check a document fragment against the act its hint points to.
-
-    Creates the request's index, tools and models, then runs the graph. Raises ``ActResolutionError``,
-    ``EliClientError`` or ``EvaluationError`` when the act cannot be found or fetched, or the
-    model keeps violating the output schema.
-    """
-    settings = settings or get_settings()
+@contextmanager
+def request_graph(settings: Settings) -> Iterator[CompiledStateGraph]:
+    """The graph for one request, with its own index, tools and models; the ELI client closes on exit."""
     index = LateBoundBm25Index()
     tools = make_tools(index)
     research_model, eval_model = build_models(settings, tools)
     with EliClient.from_settings(settings) as eli:
-        graph = build_graph(research_model, eval_model, tools, eli=eli, index=index, settings=settings)
-        state = graph.invoke({"request": request}, config={"recursion_limit": settings.graph_recursion_limit})
-    return state["result"]
+        yield build_graph(research_model, eval_model, tools, eli=eli, index=index, settings=settings)
+
+
+def run(
+    request: CheckRequest,
+    settings: Settings | None = None,
+    on_step: Callable[[str, dict], None] | None = None,
+) -> GraphState:
+    """Run the graph for a request and return its final state (the result plus the agent's messages).
+
+    ``on_step`` is called with each node's name and state update as the node finishes.
+    Raises ``ActResolutionError``, ``EliClientError`` or ``EvaluationError`` when the act cannot be
+    found or fetched, or the model keeps violating the output schema.
+    """
+    settings = settings or get_settings()
+    config = {"recursion_limit": settings.graph_recursion_limit}
+    state: GraphState = {}
+    with request_graph(settings) as graph:
+        for mode, chunk in graph.stream({"request": request}, config=config, stream_mode=["updates", "values"]):
+            if mode == "values":
+                state = chunk
+            elif on_step is not None:
+                for node, update in chunk.items():
+                    on_step(node, update or {})
+    return state
+
+
+def draw_mermaid(settings: Settings | None = None) -> str:
+    """Mermaid diagram of the graph topology, built with placeholder models (no API key, no requests)."""
+    settings = settings or get_settings()
+    index = LateBoundBm25Index()
+    with EliClient.from_settings(settings) as eli:
+        graph = build_graph(
+            _PLACEHOLDER_MODEL, _PLACEHOLDER_MODEL, make_tools(index), eli=eli, index=index, settings=settings
+        )
+        return graph.get_graph().draw_mermaid()
+
+
+def _not_callable(_):
+    raise RuntimeError("Placeholder model of the topology diagram must not be called")
+
+
+_PLACEHOLDER_MODEL = RunnableLambda(_not_callable)
+
+
+def check(request: CheckRequest, settings: Settings | None = None) -> ComplianceResult:
+    """Check a document fragment against the act its hint points to; raises as ``run`` does."""
+    return run(request, settings)["result"]

@@ -17,6 +17,9 @@ dependencies = [
     "rich>=13.0",
 ]
 
+[project.scripts]
+legal-checker = "legal_checker.cli:main"
+
 [project.optional-dependencies]
 anthropic = ["langchain-anthropic"]
 openai = ["langchain-openai"]
