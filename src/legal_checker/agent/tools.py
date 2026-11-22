@@ -2,7 +2,7 @@
 
 from langchain_core.tools import BaseTool, tool
 
-from legal_checker.bm25_retriever import InMemoryBm25Index
+from legal_checker.bm25_retriever import InMemoryBm25Index, LateBoundBm25Index
 from legal_checker.models import LegalUnit
 
 # Upper bound on one tool result's text (~2.5k tokens): a few full articles, not half the act.
@@ -13,7 +13,7 @@ _CUT_MARK = " […]"
 _SEPARATOR = "\n\n"
 
 
-def make_tools(index: InMemoryBm25Index) -> list[BaseTool]:
+def make_tools(index: InMemoryBm25Index | LateBoundBm25Index) -> list[BaseTool]:
     """Tools bound to one request's index, so no state is shared between checks.
 
     Each returns ``(content, artifact)``: the provisions' text for the LLM and their

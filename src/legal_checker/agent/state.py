@@ -1,5 +1,6 @@
 """LangGraph state (SPEC section 3.4)."""
 
+import operator
 from typing import Annotated, TypedDict
 
 from langchain_core.messages import AnyMessage
@@ -26,3 +27,4 @@ class GraphState(TypedDict, total=False):
     schema_errors: list[str]
     eval_attempts: int
     result: ComplianceResult
+    warnings: Annotated[list[str], operator.add]  # collected along the way (extraction, chunking, agent limits)
