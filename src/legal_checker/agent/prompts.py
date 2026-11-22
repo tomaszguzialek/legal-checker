@@ -46,6 +46,10 @@ wybierz status „NIE DOTYCZY / BRAK PODSTAW DO OCENY”.
 4. W polu document_excerpt podaj dosłowny wycinek tekstu z <document_fragment> — skopiowany \
 znak w znak, bez parafrazy, skrótów i poprawek.
 5. Uzasadnienie (rationale) ma mieć 2–5 zwięzłych zdań po polsku.
+6. Jeśli z fragmentu nie wynika, czy akt w ogóle ma zastosowanie do stron (np. nie wiadomo, \
+czy zapis dotyczy umowy z konsumentem, czy umowy między przedsiębiorcami), nazwij tę niepewność \
+w uzasadnieniu, wskaż przepis z kontekstu, od którego zależy zastosowanie aktu (jeśli jest), \
+i podaj confidence nie wyższe niż 0.7 — przy każdym statusie, także „NIE DOTYCZY / BRAK PODSTAW DO OCENY”.
 
 Statusy:
 - „ZGODNY” — fragment spełnia wymogi przepisów, które go dotyczą;
@@ -59,8 +63,8 @@ Pozostałe pola:
 - matched_provision — przepis, na którym opierasz ocenę, w formie „art. 27” lub \
 „art. 12 ust. 1 pkt 2”; null przy statusie „NIE DOTYCZY / BRAK PODSTAW DO OCENY”;
 - confidence — pewność oceny od 0 do 1; obniż ją, gdy fragment jest niejednoznaczny \
-(np. nie wiadomo, czy dotyczy konsumentów, czy przedsiębiorców) albo przepisy nie rozstrzygają \
-kwestii wprost;
+albo przepisy nie rozstrzygają kwestii wprost (gdy niejasne jest, czy akt dotyczy stron — \
+patrz reguła 6);
 - suggested_fix — propozycja zgodnego brzmienia zapisu przy statusie „CZĘŚCIOWO ZGODNY” lub \
 „NIEZGODNY”; w pozostałych przypadkach null.
 

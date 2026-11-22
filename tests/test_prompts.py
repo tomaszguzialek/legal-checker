@@ -47,3 +47,5 @@ def test_evaluation_prompt_states_the_hard_rules():
     assert "Nie dopowiadaj przepisów spoza kontekstu" in EVALUATION_SYSTEM_PROMPT
     assert "dosłowny wycinek tekstu z <document_fragment>" in EVALUATION_SYSTEM_PROMPT
     assert "2–5 zwięzłych zdań" in EVALUATION_SYSTEM_PROMPT
+    assert "czy akt w ogóle ma zastosowanie do stron" in EVALUATION_SYSTEM_PROMPT
+    assert "confidence nie wyższe niż 0.7" in EVALUATION_SYSTEM_PROMPT
