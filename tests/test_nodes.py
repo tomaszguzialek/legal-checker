@@ -6,15 +6,23 @@ from langchain_core.language_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableLambda
 
+from langgraph.graph import END, START, StateGraph
+
 from legal_checker.agent.nodes import (
     SHORT_CIRCUIT_CONFIDENCE,
+    TOOL_LIMIT_MESSAGE,
+    TOOL_LIMIT_WARNING,
     make_act_nodes,
     make_research_node,
+    make_route_after_research,
+    make_tools_node,
     route_after_retrieve,
     short_circuit_na,
     validate,
 )
 from legal_checker.agent.prompts import RESEARCH_SYSTEM_PROMPT
+from legal_checker.agent.state import GraphState
+from legal_checker.agent.tools import make_tools
 from legal_checker.bm25_retriever import LateBoundBm25Index
 from legal_checker.eli_client import ActCache, ActContent, ActMetadata, EliClient, FetchedAct, TextSource
 from legal_checker.models import (
@@ -140,7 +148,7 @@ def test_research_sends_prompt_fragment_and_candidates_then_appends_the_reply(el
     state = run_act_nodes(eli, WITHDRAWAL)
     reply = AIMessage("", tool_calls=[{"name": "get_provision", "args": {"article": "38"}, "id": "c1"}])
     calls = []
-    research = make_research_node(RunnableLambda(lambda messages: calls.append(messages) or reply))
+    research = make_research_node(RunnableLambda(lambda messages: calls.append(messages) or reply), max_tool_calls=4)
 
     update = research(state)
 
@@ -162,10 +170,71 @@ def test_research_continues_the_conversation_after_tool_results(eli):
     ]
     model = GenericFakeChatModel(messages=iter([AIMessage("Kontekst jest kompletny.")]))
     calls = []
-    research = make_research_node(RunnableLambda(lambda messages: calls.append(messages) or model.invoke(messages)))
+    research = make_research_node(
+        RunnableLambda(lambda messages: calls.append(messages) or model.invoke(messages)), max_tool_calls=4
+    )
 
     reply = research(state)["messages"][0]
 
     assert reply.content == "Kontekst jest kompletny." and not reply.tool_calls
     assert [type(m) for m in calls[0]] == [SystemMessage, HumanMessage, AIMessage, ToolMessage]
     assert calls[0][2:] == state["messages"]
+
+
+def get_provision_call(article: str, call_id: str) -> dict:
+    return {"name": "get_provision", "args": {"article": article}, "id": call_id}
+
+
+def answered(*articles: str) -> list:
+    """A reply asking for ``get_provision`` of each article, followed by the tool results."""
+    calls = [get_provision_call(article, f"done-{article}") for article in articles]
+    results = [
+        ToolMessage(f"[DU/2014/827:art.{a}]", tool_call_id=f"done-{a}", artifact=[f"DU/2014/827:art.{a}"]) for a in articles
+    ]
+    return [AIMessage("", tool_calls=calls), *results]
+
+
+@pytest.mark.parametrize(
+    ("history", "tool_calls", "expected"),
+    [
+        ([], [get_provision_call("38", "c1")], "tools"),
+        ([], [], "evaluate"),
+        (answered("27"), [get_provision_call("38", "c1")], "tools"),
+        (answered("27", "28"), [get_provision_call("38", "c1")], "evaluate"),  # budget of 2 used up
+    ],
+)
+def test_route_after_research(history, tool_calls, expected):
+    state = {"messages": [*history, AIMessage("", tool_calls=tool_calls)]}
+
+    assert make_route_after_research(max_tool_calls=2)(state) == expected
+
+
+@pytest.mark.parametrize(("history", "requested", "warned"), [([], 2, False), ([], 3, True), (answered("27", "28"), 1, True)])
+def test_research_warns_when_the_reply_asks_for_more_calls_than_the_budget_left(eli, history, requested, warned):
+    state = {**run_act_nodes(eli, WITHDRAWAL), "messages": history}
+    reply = AIMessage("", tool_calls=[get_provision_call(str(30 + i), f"c{i}") for i in range(requested)])
+
+    update = make_research_node(RunnableLambda(lambda _: reply), max_tool_calls=2)(state)
+
+    assert update.get("warnings") == ([TOOL_LIMIT_WARNING] if warned else None)
+
+
+def test_tools_node_runs_calls_in_order_only_up_to_the_budget(eli):
+    state = run_act_nodes(eli, WITHDRAWAL)
+    index = LateBoundBm25Index()
+    index.build(state["units"])
+    graph = StateGraph(GraphState)
+    graph.add_node("tools", make_tools_node(make_tools(index), max_tool_calls=3))
+    graph.add_edge(START, "tools")
+    graph.add_edge("tools", END)
+    reply = AIMessage("", tool_calls=[get_provision_call(article, f"c{article}") for article in ["38", "34", "35"]])
+
+    messages = graph.compile().invoke({"messages": [*answered("27"), reply]})["messages"][3:]
+
+    assert [(m.tool_call_id, m.artifact) for m in messages] == [
+        ("c38", ["DU/2014/827:art.38"]),
+        ("c34", ["DU/2014/827:art.34"]),
+        ("c35", []),
+    ]
+    assert messages[0].content.startswith("[DU/2014/827:art.38]")
+    assert messages[2].content == TOOL_LIMIT_MESSAGE and messages[2].status == "error"

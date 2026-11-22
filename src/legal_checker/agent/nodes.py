@@ -6,8 +6,11 @@ Each node takes the graph state and returns a partial update of it.
 from collections.abc import Callable
 from typing import Literal
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import Runnable
+from langchain_core.tools import BaseTool
+from langgraph.prebuilt import ToolNode
+from langgraph.prebuilt.tool_node import ToolCallRequest
 
 from legal_checker import legal_chunker
 from legal_checker.agent.prompts import RESEARCH_SYSTEM_PROMPT
@@ -29,6 +32,8 @@ SHORT_CIRCUIT_RATIONALE = (
     "Akt nie daje więc podstaw do oceny tego fragmentu. "
     "Wynik ustalono bez wywołania modelu językowego."
 )
+TOOL_LIMIT_WARNING = "Osiągnięto limit wywołań narzędzi agenta"
+TOOL_LIMIT_MESSAGE = "Nie wykonano: osiągnięto limit wywołań narzędzi. Oceń zgodność na podstawie zebranego kontekstu."
 
 
 def make_act_nodes(eli: EliClient, index: LateBoundBm25Index, top_k: int) -> dict[str, Node]:
@@ -85,19 +90,64 @@ def short_circuit_na(state: GraphState) -> dict:
     return {"result": _post_validate(payload, state)}
 
 
-def make_research_node(research_model: Runnable) -> Node:
+def make_research_node(research_model: Runnable, max_tool_calls: int) -> Node:
     """The agent step: the model reviews the candidates and either calls tools or finishes.
 
     ``messages`` holds only the research conversation (the model's ``AIMessage``s and the
     ``ToolMessage``s answering them); the system prompt and the fragment with its candidates
     are put in front of it on every call, so they are built from the state the same way each time.
+    A reply asking for more tool calls than the budget has left adds ``TOOL_LIMIT_WARNING``.
     """
 
     def research(state: GraphState) -> dict:
         prompt = [SystemMessage(RESEARCH_SYSTEM_PROMPT), HumanMessage(context_prompt(state))]
-        return {"messages": [research_model.invoke([*prompt, *state.get("messages", [])])]}
+        reply = research_model.invoke([*prompt, *state.get("messages", [])])
+        update: dict = {"messages": [reply]}
+        if len(reply.tool_calls) > remaining_tool_calls(state, max_tool_calls):
+            update["warnings"] = [TOOL_LIMIT_WARNING]
+        return update
 
     return research
+
+
+def make_route_after_research(max_tool_calls: int) -> Callable[[GraphState], Literal["tools", "evaluate"]]:
+    """Run the tools while the last reply asks for any and the budget is not used up."""
+
+    def route_after_research(state: GraphState) -> Literal["tools", "evaluate"]:
+        last = state["messages"][-1]
+        if isinstance(last, AIMessage) and last.tool_calls and remaining_tool_calls(state, max_tool_calls) > 0:
+            return "tools"
+        return "evaluate"
+
+    return route_after_research
+
+
+def make_tools_node(tools: list[BaseTool], max_tool_calls: int) -> ToolNode:
+    """``ToolNode`` running the last reply's tool calls in order, as far as the budget allows.
+
+    Calls beyond it are not run: each gets a ``ToolMessage`` saying so (with no artifact), so the
+    conversation stays well-formed for the provider when the research model is called again.
+    """
+
+    def within_budget(request: ToolCallRequest, execute: Callable[[ToolCallRequest], ToolMessage]) -> ToolMessage:
+        state = request.state
+        position = [call["id"] for call in state["messages"][-1].tool_calls].index(request.tool_call["id"])
+        if position < remaining_tool_calls(state, max_tool_calls):
+            return execute(request)
+        return ToolMessage(
+            TOOL_LIMIT_MESSAGE,
+            tool_call_id=request.tool_call["id"],
+            name=request.tool_call["name"],
+            artifact=[],
+            status="error",
+        )
+
+    return ToolNode(tools, wrap_tool_call=within_budget)
+
+
+def remaining_tool_calls(state: GraphState, max_tool_calls: int) -> int:
+    used = sum(isinstance(message, ToolMessage) for message in state.get("messages", []))
+    return max(max_tool_calls - used, 0)
 
 
 def context_prompt(state: GraphState) -> str:
