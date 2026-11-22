@@ -21,6 +21,11 @@ class EliRef(BaseModel):
     def key(self) -> str:
         return f"{self.publisher}/{self.year}/{self.position}"
 
+    @classmethod
+    def from_key(cls, key: str) -> "EliRef":
+        publisher, year, position = key.split("/")
+        return cls(publisher=publisher, year=int(year), position=int(position))
+
 
 class ActDocument(BaseModel):
     """Fetched act: source metadata plus the cleaned text."""

@@ -55,7 +55,7 @@ Zbudowanie działającego od końca do końca (*end-to-end*) narzędzia CLI / le
 * **Klient LLM:** `langchain>=1.0` — `init_chat_model("provider:model")` jako jedyny punkt wyboru modelu (podmiana dostawcy wyłącznie przez `.env`, bez własnego adaptera). Integracje dostawców jako opcjonalne zależności: `langchain-anthropic`, `langchain-openai`, `langchain-google-genai`. Structured Outputs przez `model.with_structured_output(LlmEvaluationPayload, method="json_schema", include_raw=True)`.
 * **Obserwowalność (opcjonalnie):** LangSmith — śledzenie przebiegu grafu włączane zmiennymi `LANGSMITH_TRACING` / `LANGSMITH_API_KEY`, bez zmian w kodzie.
 * **Testy:** `pytest` + `pytest-asyncio` + `respx` (do mockowania zapytań HTTP) + fałszywe modele z `langchain_core` (`GenericFakeChatModel`) do deterministycznych testów grafu bez wywołań API.
-* **CI/CD:** GitHub Actions (`.github/workflows/ci.yml`) — `uv sync --locked` + `uv run pytest` przy każdym pushu na `main` i w każdym pull requeście; bez anulowania trwających buildów, tak aby każdy commit miał własny przebieg. Testy `live` są w CI pomijane (brak klucza API).
+* **CI/CD:** GitHub Actions (`.github/workflows/ci.yml`) — `uv sync --locked` + `uv run pytest` przy każdym pushu na `main` i w każdym pull requeście; bez anulowania trwających buildów, tak aby każdy commit miał własny przebieg. Testy oznaczone `@pytest.mark.live` (prawdziwe API ELI Sejmu lub dostawca LLM) są domyślnie wyłączone (`addopts = "-m 'not live'"` w `pyproject.toml`), więc nie uruchamiają się w CI; uruchamia się je ręcznie przez `uv run pytest -m live`. Pozostałe testy działają bez sieci (HTTP mockowane przez `respx` na zarezerwowanym hoście `eli-api.test`).
 
 ### 2.2 Docelowa struktura katalogów
 ```text
@@ -222,14 +222,14 @@ Realizuj zadania **etapowo**, po każdym tasku uruchamiając testy jednostkowe i
 
 #### Task 2.2: Klient API ELI i wybór aktualnego tekstu (`eli_client.py`)
 * [ ] **Subtask 2.2.1:** Zaimplementuj pobieranie metadanych aktu z `GET /acts/{publisher}/{year}/{position}` (tytuł aktu, status, daty, informacje o tekstach/powiązaniach).
-* [ ] **Subtask 2.2.2:** Dodaj logikę sprawdzania, czy dla danego aktu dostępny jest nowszy tekst jednolity / ujednolicony (w metadanych lub powiązaniach `/references`), aby w PoC pracować na najbardziej aktualnym brzmieniu „na dzień dzisiejszy”.
-* [ ] **Subtask 2.2.3:** Zaimplementuj pobieranie treści dokumentu (preferuj HTML, jeśli dostępny; w przeciwnym razie pobierz `text.pdf`).
+* [ ] **Subtask 2.2.2:** Dodaj logikę wyboru źródła najbardziej aktualnego brzmienia aktu „na dzień dzisiejszy” (uzasadnienie: [ADR 0002](../docs/adr/0002-current-act-text-source.md)). Kolejność: (1) tekst ujednolicony aktu (PDF typu `U` w `texts`), (2) najnowszy tekst jednolity z powiązań `Inf. o tekście jednolitym` (jego PDF `U` / `T` / `O`), (3) HTML (`text.html`), (4) `text.pdf`. Uwaga: `text.html` i `text.pdf` zawierają brzmienie pierwotne (z dnia ogłoszenia), więc są aktualne tylko dla aktów niezmienianych.
+* [ ] **Subtask 2.2.3:** Zaimplementuj pobieranie treści dokumentu ze źródła wybranego w Subtasku 2.2.2 (PDF lub HTML).
 * [ ] **Subtask 2.2.4:** Dodaj prosty lokalny cache (w pamięci RAM + zapis plików surowych/sparsowanych w `.cache/`), aby nie pobierać tego samego aktu wielokrotnie podczas testów.
 * **DoD:** Klient potrafi pobrać metadane i plik treści np. dla `DU/2014/827` (ustawa o prawach konsumenta) i zapisać je w cache.
 
 #### Task 2.3: Ekstrakcja i czyszczenie tekstu (`text_extractor.py`)
 * [ ] **Subtask 2.3.1:** Zaimplementuj ekstrakcję tekstu z PDF (za pomocą `pymupdf` z zachowaniem kolejności bloków tekstu) oraz z HTML (`BeautifulSoup`).
-* [ ] **Subtask 2.3.2:** Zaimplementuj czyszczenie artefaktów dzienników urzędowych: usuwanie powtarzających się nagłówków/stopek stron (np. `©Kancelaria Sejmu`, numery stron `s. 1/45`, daty generowania pliku).
+* [ ] **Subtask 2.3.2:** Zaimplementuj czyszczenie artefaktów dzienników urzędowych: usuwanie powtarzających się nagłówków/stopek stron (np. `©Kancelaria Sejmu`, numery stron `s. 1/45`, daty generowania pliku). W tekście ujednoliconym (PDF `U`) usuń bloki `<…>` wraz z treścią (brzmienie jeszcze nieobowiązujące, np. `<5ga) …>` z przypisem „wejdzie w życie z dn. …”), a z bloków `[…]` usuń tylko nawiasy (brzmienie obowiązujące dziś, przeznaczone do zmiany) — patrz [ADR 0002](../docs/adr/0002-current-act-text-source.md).
 * [ ] **Subtask 2.3.3:** Zaimplementuj łączenie wyrazów podzielonych myślnikiem na końcu linii (`([a-ząćęłńóśźż])-\n([a-ząćęłńóśźż])` → `\1\2`) przy jednoczesnym zachowaniu podziałów akapitów.
 * **DoD:** Wyekstrahowany tekst ustawy jest ciągły, pozbawiony nagłówków stron i połamanych wyrazów, gotowy do cięcia strukturalnego.
 

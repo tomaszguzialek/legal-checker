@@ -32,6 +32,7 @@ def test_check_request_min_lengths():
 
 def test_eli_ref_key():
     assert EliRef(publisher="DU", year=2014, position=827).key == "DU/2014/827"
+    assert EliRef.from_key("MP/2023/100") == EliRef(publisher="MP", year=2023, position=100)
 
 
 def test_settings_defaults():

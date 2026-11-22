@@ -21,6 +21,6 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked
 
-      # Live LLM tests (@pytest.mark.live) skip themselves without an API key.
+      # Tests marked @pytest.mark.live (real ELI API / LLM) are deselected by default (pyproject addopts).
       - name: Run tests
         run: uv run pytest -q
