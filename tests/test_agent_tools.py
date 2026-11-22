@@ -1,5 +1,10 @@
+from pathlib import Path
+
+from langchain_core.messages import ToolCall, ToolMessage
+
 from legal_checker.agent.tools import MAX_CONTENT_CHARS, make_tools
 from legal_checker.bm25_retriever import InMemoryBm25Index
+from legal_checker.legal_chunker import chunk_act
 from legal_checker.models import LegalUnit
 
 
@@ -84,3 +89,62 @@ def test_content_is_cut_to_the_limit_and_lists_only_the_units_shown():
     assert content.count(" […]") == 1
     assert content.endswith("[Pominięte z powodu limitu długości odpowiedzi: DU/2014/827:art.4]")
     assert len(content) <= MAX_CONTENT_CHARS + 100
+
+
+# Full text of the consumer rights act (DU/2014/827), as in test_bm25_retriever.py.
+FULL_ACT_TOOLS = {
+    tool.name: tool
+    for tool in make_tools(
+        InMemoryBm25Index(
+            chunk_act("DU/2014/827", (Path(__file__).parent / "fixtures" / "acts" / "DU_2014_827.txt").read_text()).units
+        )
+    )
+}
+
+
+def call(name: str, **args) -> ToolMessage:
+    """Invoke a tool the way LangGraph's ToolNode does: with the model's ToolCall."""
+    return FULL_ACT_TOOLS[name].invoke(ToolCall(name=name, args=args, id=f"call_{name}", type="tool_call"))
+
+
+def test_search_provisions_invoked_with_a_tool_call_returns_a_tool_message_with_unit_ids():
+    message = call("search_provisions", query="odstąpienie od umowy zawartej na odległość w terminie 14 dni", top_k=3)
+
+    assert isinstance(message, ToolMessage)
+    assert message.tool_call_id == "call_search_provisions"
+    assert message.name == "search_provisions"
+    assert "DU/2014/827:art.27" in message.artifact
+    assert message.content.startswith(f"[{message.artifact[0]}] Rozdział 4 Prawo odstąpienia od umowy")
+    assert all(f"[{unit_id}] " in message.content for unit_id in message.artifact)
+    assert len(message.content) <= MAX_CONTENT_CHARS
+
+
+def test_get_provision_invoked_with_a_tool_call_returns_the_article():
+    message = call("get_provision", article="27")
+
+    assert message.artifact == ["DU/2014/827:art.27"]
+    assert message.content.startswith("[DU/2014/827:art.27] Rozdział 4 Prawo odstąpienia")
+    assert "Art. 27. 1. Konsument, który zawarł umowę na odległość" in message.content
+    assert "14 dni" in message.content
+
+
+def test_get_provision_returns_only_the_requested_paragraph_of_a_split_article():
+    message = call("get_provision", article="38", paragraph="1")
+
+    assert message.artifact == ["DU/2014/827:art.38.ust.1"]
+    assert "> Art. 38 > ust. 1\n" in message.content
+
+
+def test_get_provision_of_a_missing_article_returns_a_message_and_no_units():
+    message = call("get_provision", article="999")
+
+    assert message.content == "Nie znaleziono przepisu art. 999 w tym akcie."
+    assert message.artifact == []
+    assert message.status == "success"
+
+
+def test_search_provisions_with_no_matching_words_returns_a_message_and_no_units():
+    message = call("search_provisions", query="xyzzy qwerty")
+
+    assert message.content.startswith("Brak przepisów pasujących do zapytania „xyzzy qwerty”")
+    assert message.artifact == []
