@@ -1,3 +1,6 @@
+import re
+from pathlib import Path
+
 from legal_checker.legal_chunker import FALLBACK_CHUNK_CHARS, NO_UNITS_WARNING, chunk_act, split_sections
 
 # Heading layout of the Civil Code (DU/2024/1061) as extracted from its unified-text PDF.
@@ -282,3 +285,59 @@ def test_chunk_act_empty_text():
 
     assert result.units == []
     assert result.warnings == [NO_UNITS_WARNING]
+
+
+# Real multi-chapter fragment of the consumer rights act (DU/2014/827) as extracted from its
+# unified-text PDF: chapters 1, 4, 6 and 7 with a long, a repealed and a range article.
+FRAGMENT = (Path(__file__).parent / "fixtures" / "acts" / "DU_2014_827_fragment.txt").read_text()
+CHAPTER_4 = "Rozdział 4 Prawo odstąpienia od umowy zawartej na odległość lub poza lokalem przedsiębiorstwa"
+
+
+def test_chunk_act_on_a_multi_chapter_act_fragment():
+    result = chunk_act("DU/2014/827", FRAGMENT)
+
+    assert result.warnings == []
+    assert [(u.unit_id, u.article, u.paragraph, u.hierarchy_path) for u in result.units] == [
+        ("DU/2014/827:art.1", "1", None, ["Rozdział 1 Przepisy ogólne", "Art. 1"]),
+        ("DU/2014/827:art.27", "27", None, [CHAPTER_4, "Art. 27"]),
+        ("DU/2014/827:art.28", "28", None, [CHAPTER_4, "Art. 28"]),
+        ("DU/2014/827:art.38.ust.1", "38", "1", [CHAPTER_4, "Art. 38", "ust. 1"]),  # over MAX_UNIT_CHARS
+        ("DU/2014/827:art.38.ust.2", "38", "2", [CHAPTER_4, "Art. 38", "ust. 2"]),
+        ("DU/2014/827:art.38a", "38a", None, [CHAPTER_4, "Art. 38a"]),
+        ("DU/2014/827:art.44–50", "44–50", None, ["Rozdział 6 Przepisy zmieniające", "Art. 44–50"]),
+        ("DU/2014/827:art.51", "51", None, ["Rozdział 7 Przepisy przejściowe i końcowe", "Art. 51"]),
+    ]
+    assert all(u.eli == "DU/2014/827" for u in result.units)
+
+
+def test_chunk_act_keeps_full_provision_text_of_the_fragment():
+    units = {u.unit_id.split(":")[1]: u.text for u in chunk_act("DU/2014/827", FRAGMENT).units}
+
+    assert units["art.27"] == (
+        "Art. 27. 1. Konsument, który zawarł umowę na odległość lub poza lokalem przedsiębiorstwa, może w terminie "
+        "14 dni odstąpić od niej bez podawania przyczyny i bez ponoszenia kosztów, z wyjątkiem kosztów określonych "
+        "w art. 33, art. 34 ust. 2 i art. 35.\n"
+        "2. Jeżeli konsument zawarł umowę poza lokalem przedsiębiorstwa podczas nieumówionej wizyty przedsiębiorcy "
+        "w miejscu zamieszkania lub zwykłego pobytu konsumenta albo wycieczki, termin do odstąpienia od umowy "
+        "wynosi 30 dni."
+    )
+    assert [line[:3] for line in units["art.28"].split("\n")] == ["Art", "1) ", "a) ", "b) ", "2) "]
+    assert [line[:3] for line in units["art.1"].split("\n")] == ["Art", "1) ", "2) ", "3) ", "4) ", "4a)", "4b)"]
+    assert units["art.38.ust.2"].startswith("Art. 38. 2. Przepisów ust. 1 pkt 1–3 i 5 nie stosuje się")
+
+    # Nothing but the act's title and the chapter headings is left out of the units.
+    def words(text: str) -> str:
+        return re.sub(r"\s+", " ", text).strip()
+
+    headings = [
+        "Dz. U. 2014 poz. 827 U S TAWA z dnia 30 maja 2014 r. o prawach konsumenta",
+        "Rozdział 1 Przepisy ogólne",
+        CHAPTER_4,
+        "Rozdział 6 Przepisy zmieniające",
+        "Rozdział 7 Przepisy przejściowe i końcowe",
+    ]
+    body = words(FRAGMENT)
+    for heading in headings:
+        assert heading in body
+        body = body.replace(heading + " ", "", 1)
+    assert words(" ".join(units.values()).replace("Art. 38. 2.", "2.")) == body
