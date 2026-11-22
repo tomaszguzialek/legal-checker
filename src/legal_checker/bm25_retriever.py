@@ -27,6 +27,15 @@ _SUFFIXES = sorted(
     key=len,
     reverse=True,
 )
+# A reference to an article of the same act: "o którym mowa w art. 27", "art. 43^1 ust. 2 pkt 1".
+# References to other acts ("art. 385^1 Kodeksu cywilnego", "art. 6 ust. 1 rozporządzenia 2016/679")
+# are skipped: the act's name follows the number and its paragraph, point and letter.
+_NUMBER = r"\d+[a-z]*(?:\^\d+[a-z]*)?"
+_REFERENCE = re.compile(
+    rf"\bart\.\s*({_NUMBER})(?![\w^])"
+    r"(?!(?:\s+(?:ust\.|pkt|lit\.)\s*[\w^]+)*\s+(?:ustaw|kodeks|rozporządze|dyrektyw|k\.\s?[a-z]\.))",
+    re.IGNORECASE,
+)
 # Stems shorter than this are not trimmed further: "dni" stays rather than becoming "dn".
 _MIN_STEM = 3
 
@@ -63,3 +72,63 @@ class InMemoryBm25Index:
         self.units = units
         self.corpus = [tokenize(" ".join([*unit.hierarchy_path, unit.text])) for unit in units]
         self.bm25 = BM25Okapi(self.corpus)
+        self._by_article: dict[str, list[int]] = {}
+        for i, unit in enumerate(units):
+            self._by_article.setdefault(unit.article, []).append(i)
+
+    def search(self, query: str, top_k: int = 12) -> list[tuple[LegalUnit, float]]:
+        """The ``top_k`` best-matching units, best first, plus the articles they refer to.
+
+        Units sharing no token with the query are left out. Units of articles referenced by
+        the top results ("o którym mowa w art. 27") follow them with their own scores, even
+        if that makes the list longer than ``top_k``.
+        """
+        scores = self.bm25.get_scores(tokenize(query))
+        ranked = sorted((i for i, score in enumerate(scores) if score > 0), key=lambda i: -scores[i])
+        found = ranked[:top_k]
+        referenced = [
+            i
+            for article in self._references([self.units[i] for i in found])
+            for i in self._by_article.get(article, [])
+            if i not in found
+        ]
+        return [(self.units[i], float(scores[i])) for i in found + referenced]
+
+    def get(self, article: str, paragraph: str | None = None) -> LegalUnit | None:
+        """The unit of an article (or of its paragraph), looked up by number, e.g. ``get("27a", "2")``.
+
+        An article split into paragraphs is returned whole when no paragraph is asked for; an
+        article kept whole is returned for any of its paragraphs. ``None`` if there is no such unit.
+        """
+        units = [self.units[i] for i in self._by_article.get(_normalize_number(article), [])]
+        if not units:
+            return None
+        if paragraph is not None:
+            paragraph = _normalize_number(paragraph)
+            return next((unit for unit in units if unit.paragraph in (paragraph, None)), None)
+        if len(units) == 1:
+            return units[0]
+        first = units[0]
+        return first.model_copy(
+            update={
+                "unit_id": first.unit_id.rsplit(".", 2)[0] if first.paragraph else first.unit_id,
+                "paragraph": None,
+                "hierarchy_path": first.hierarchy_path[:-1],
+                "text": "\n".join(unit.text for unit in units),
+            }
+        )
+
+    @staticmethod
+    def _references(units: list[LegalUnit]) -> list[str]:
+        """Numbers of the articles the units refer to, in order of appearance, without their own."""
+        articles: list[str] = []
+        for unit in units:
+            for match in _REFERENCE.finditer(unit.text):
+                if match[1] != unit.article and match[1] not in articles:
+                    articles.append(match[1])
+        return articles
+
+
+def _normalize_number(number: str) -> str:
+    """Unit number as the chunker writes it: "Art. 27 a" -> "27a"."""
+    return re.sub(r"^(?:art\.|ust\.|§)|\s+", "", number.strip(), flags=re.IGNORECASE)
