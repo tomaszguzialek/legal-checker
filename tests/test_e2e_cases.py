@@ -34,6 +34,7 @@ class Case:
     expected_status: ComplianceStatus | None  # None: any status, the case is about how sure the model is
     provision: str | None  # the article the assessment hinges on; None when the act does not apply
     max_confidence: float = 1.0
+    groq_top_k: int | None = None  # BM25 hits on Groq's free tier, where more than GROQ_FREE_TIER_TOP_K fit
 
 
 WITHDRAWAL_ELI = "DU/2014/827"
@@ -93,6 +94,9 @@ AMBIGUOUS = Case(
     expected_status=None,
     provision="27",
     max_confidence=0.7,
+    # 5 hits (~2.5K tokens) include art. 7aa, which extends consumer rights to some sole traders, and leave
+    # room for the provisions the agent fetches; the 6th hit, the definitions of art. 2, alone adds ~1.8K.
+    groq_top_k=5,
 )
 CATEGORY_CASES = [COMPLIANT, PARTIALLY_COMPLIANT, NON_COMPLIANT, NOT_APPLICABLE, AMBIGUOUS]
 
@@ -238,11 +242,22 @@ def live_settings(tmp_path_factory) -> Settings:
 
 @pytest.fixture
 def live_check(live_settings, monkeypatch):
-    """``check`` on the live settings; on Groq, every LLM call of the module waits for the shared rate limiter."""
-    if provider(live_settings) == "groq":
+    """``check`` of a case on the live settings, for the case's hint unless another is given.
+
+    On Groq, the case's ``groq_top_k`` applies, and every LLM call of the module waits for the shared rate limiter.
+    """
+    on_groq = provider(live_settings) == "groq"
+    if on_groq:
         rate_limited = partial(llm_module.init_chat_model, rate_limiter=GROQ_FREE_TIER_RATE_LIMITER)
         monkeypatch.setattr(llm_module, "init_chat_model", rate_limited)
-    return lambda fragment, hint: check(CheckRequest(document_fragment=fragment, act_hint=hint), live_settings)
+
+    def live_check(case: Case, hint: str | None = None) -> ComplianceResult:
+        settings = live_settings
+        if on_groq and case.groq_top_k is not None:
+            settings = settings.model_copy(update={"bm25_top_k": case.groq_top_k})
+        return check(CheckRequest(document_fragment=case.fragment, act_hint=hint or case.hint), settings)
+
+    return live_check
 
 
 def assert_assessment(case: Case, result: ComplianceResult) -> None:
@@ -256,7 +271,7 @@ def assert_assessment(case: Case, result: ComplianceResult) -> None:
 @pytest.mark.live
 @pytest.mark.parametrize("case", CATEGORY_CASES, ids=lambda case: case.id)
 def test_live_case_is_assessed_as_expected(case, live_check):
-    result = live_check(case.fragment, case.hint)
+    result = live_check(case)
 
     assert_assessment(case, result)
 
@@ -264,6 +279,6 @@ def test_live_case_is_assessed_as_expected(case, live_check):
 @pytest.mark.live
 @pytest.mark.parametrize("hint", HINT_FORMATS.values(), ids=HINT_FORMATS.keys())
 def test_live_every_hint_format_gives_the_same_assessment(hint, live_check):
-    result = live_check(COMPLIANT.fragment, hint)
+    result = live_check(COMPLIANT, hint)
 
     assert_assessment(COMPLIANT, result)
