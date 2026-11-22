@@ -229,6 +229,7 @@ def validate(state: GraphState) -> dict:
 def _post_validate(payload: LlmEvaluationPayload, state: GraphState) -> ComplianceResult:
     return post_validate(
         payload,
+        document_fragment=state["request"].document_fragment,
         act=state["act"],
         candidates=state["candidates"],
         messages=state.get("messages", []),
