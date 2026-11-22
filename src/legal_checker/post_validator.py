@@ -6,9 +6,17 @@ from langchain_core.messages import AnyMessage, ToolMessage
 
 from legal_checker.models import ActDocument, ComplianceResult, LegalBasis, LegalUnit, LlmEvaluationPayload
 
-PARAPHRASED_EXCERPT_WARNING = "Cytat z dokumentu nie występuje dosłownie we fragmencie wejściowym (możliwa parafraza)"
+PARAPHRASED_EXCERPT_WARNING = (
+    "Cytat z dokumentu nie występuje dosłownie we fragmencie wejściowym (możliwa parafraza)"
+)
 # A quote the model did not copy verbatim makes the whole assessment less trustworthy.
 PARAPHRASED_EXCERPT_CONFIDENCE_FACTOR = 0.5
+UNCONSULTED_PROVISION_WARNING = "Wskazany przepis „{provision}” nie należy do przepisów widzianych przez agenta"
+
+# Unit numbers as the chunker writes them: "27", "43a", "449^1".
+_NUMBER = r"\d+[a-z]*(?:\^\d+[a-z]*)?"
+_ARTICLE_REFERENCE = re.compile(rf"\bart\.\s*({_NUMBER})", re.IGNORECASE)
+_PARAGRAPH_REFERENCE = re.compile(rf"§\s*({_NUMBER})")
 
 
 def normalize_whitespace(text: str) -> str:
@@ -32,6 +40,34 @@ def consulted_units(candidates: list[tuple[LegalUnit, float]], messages: list[An
     return list(dict.fromkeys(unit_ids))
 
 
+def provision_unit(provision: str) -> tuple[str, str] | None:
+    """The unit a provision cites, as ``(prefix, number)`` of its ``unit_id``, or ``None`` if it cites none.
+
+    "art. 12 ust. 1 pkt 2" -> ``("art", "12")``; "art. 8 § 1" (a code) -> ``("art", "8")``;
+    "§ 5 ust. 2" (a regulation without articles) -> ``("par", "5")``.
+    """
+    if match := _ARTICLE_REFERENCE.search(provision):
+        return "art", match[1].lower()
+    if match := _PARAGRAPH_REFERENCE.search(provision):
+        return "par", match[1].lower()
+    return None
+
+
+def unit_of_id(unit_id: str) -> tuple[str, str]:
+    """``(prefix, number)`` of the article or "§" unit a ``unit_id`` belongs to.
+
+    "DU/2014/827:art.27.ust.2" -> ``("art", "27")``.
+    """
+    prefix, number, *_ = unit_id.rsplit(":", 1)[-1].split(".")
+    return prefix, number.lower()
+
+
+def provision_was_consulted(provision: str, unit_ids: list[str]) -> bool:
+    """Whether the article (or "§" unit) a provision cites is among the units the agent has seen."""
+    cited = provision_unit(provision)
+    return cited is not None and cited in {unit_of_id(unit_id) for unit_id in unit_ids}
+
+
 def post_validate(
     payload: LlmEvaluationPayload,
     *,
@@ -44,12 +80,17 @@ def post_validate(
     """The final result: the LLM's assessment with source metadata attached by code.
 
     A ``document_excerpt`` not found verbatim in ``document_fragment`` adds a warning and lowers the confidence.
+    A ``matched_provision`` whose article is not among the consulted units adds a warning.
     """
     confidence = payload.confidence
     warnings = list(warnings)
     if payload.document_excerpt is not None and not excerpt_is_verbatim(payload.document_excerpt, document_fragment):
         warnings.append(PARAPHRASED_EXCERPT_WARNING)
         confidence *= PARAPHRASED_EXCERPT_CONFIDENCE_FACTOR
+    unit_ids = consulted_units(candidates, messages)
+    provision = payload.matched_provision
+    if provision is not None and not provision_was_consulted(provision, unit_ids):
+        warnings.append(UNCONSULTED_PROVISION_WARNING.format(provision=provision))
     return ComplianceResult(
         status=payload.status,
         confidence=confidence,
@@ -63,6 +104,6 @@ def post_validate(
         ),
         rationale=payload.rationale,
         suggested_fix=payload.suggested_fix,
-        consulted_units=consulted_units(candidates, messages),
+        consulted_units=unit_ids,
         warnings=warnings,
     )
