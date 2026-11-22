@@ -95,41 +95,6 @@ def _designator(designator: str) -> str:
     return designator
 
 
-def _designator(designator: str) -> str:
-    """Numbers and Roman numerals as they are, ordinal words in lower case ("PIERWSZA" -> "pierwsza")."""
-    if designator.isalpha() and not _ROMAN.fullmatch(designator):
-        return designator.lower()
-    return designator
-
-
-def chunk_act(eli: str, text: str) -> list[LegalUnit]:
-    """Split an act into its articles (or "§" units of a regulation), each with its parent headings.
-
-    Text before the first unit of a section (the act's title, preamble) is not part of any unit.
-    """
-    sections = split_sections(text)
-    uses_articles = any(_ARTICLE.match(line) for section in sections for line in section.lines)
-    boundary, label, id_prefix = (_ARTICLE, "Art.", "art.") if uses_articles else (_PARAGRAPH_UNIT, "§", "par.")
-
-    units: list[LegalUnit] = []
-    for section in sections:
-        current: LegalUnit | None = None
-        for line in section.lines:
-            if start := boundary.match(line):
-                number = re.sub(r"\s+", "", start[1])
-                current = LegalUnit(
-                    unit_id=f"{eli}:{id_prefix}{number}",
-                    eli=eli,
-                    article=number,
-                    hierarchy_path=[*section.hierarchy_path, f"{label} {number}"],
-                    text=line,
-                )
-                units.append(current)
-            elif current:
-                current.text += "\n" + line
-    return units
-
-
 def chunk_act(eli: str, text: str, max_unit_chars: int = MAX_UNIT_CHARS) -> list[LegalUnit]:
     """Split an act into its articles (or "§" units of a regulation), each with its parent headings.
 
