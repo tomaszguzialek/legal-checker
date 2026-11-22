@@ -2,15 +2,19 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.language_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.runnables import RunnableLambda
 
 from legal_checker.agent.nodes import (
     SHORT_CIRCUIT_CONFIDENCE,
     make_act_nodes,
+    make_research_node,
     route_after_retrieve,
     short_circuit_na,
     validate,
 )
+from legal_checker.agent.prompts import RESEARCH_SYSTEM_PROMPT
 from legal_checker.bm25_retriever import LateBoundBm25Index
 from legal_checker.eli_client import ActCache, ActContent, ActMetadata, EliClient, FetchedAct, TextSource
 from legal_checker.models import (
@@ -130,3 +134,38 @@ def test_validate_attaches_metadata_and_everything_the_agent_saw(eli):
         "source_url": PDF_URL,
     }
     assert result.consulted_units == [*candidate_ids, "DU/2014/827:art.38"]
+
+
+def test_research_sends_prompt_fragment_and_candidates_then_appends_the_reply(eli):
+    state = run_act_nodes(eli, WITHDRAWAL)
+    reply = AIMessage("", tool_calls=[{"name": "get_provision", "args": {"article": "38"}, "id": "c1"}])
+    calls = []
+    research = make_research_node(RunnableLambda(lambda messages: calls.append(messages) or reply))
+
+    update = research(state)
+
+    assert update == {"messages": [reply]}
+    system, human = calls[0]
+    assert isinstance(system, SystemMessage) and system.content == RESEARCH_SYSTEM_PROMPT
+    assert isinstance(human, HumanMessage)
+    assert human.content.startswith(f"<document_fragment>\n{WITHDRAWAL}\n</document_fragment>\n\n<legal_provisions>\n[")
+    assert human.content.endswith("</legal_provisions>")
+    for unit, _ in state["candidates"]:
+        assert f"[{unit.unit_id}] {' > '.join(unit.hierarchy_path)}\n{unit.text}" in human.content
+
+
+def test_research_continues_the_conversation_after_tool_results(eli):
+    state = run_act_nodes(eli, WITHDRAWAL)
+    state["messages"] = [
+        AIMessage("", tool_calls=[{"name": "get_provision", "args": {"article": "38"}, "id": "c1"}]),
+        ToolMessage("[DU/2014/827:art.38] Art. 38.", tool_call_id="c1", artifact=["DU/2014/827:art.38"]),
+    ]
+    model = GenericFakeChatModel(messages=iter([AIMessage("Kontekst jest kompletny.")]))
+    calls = []
+    research = make_research_node(RunnableLambda(lambda messages: calls.append(messages) or model.invoke(messages)))
+
+    reply = research(state)["messages"][0]
+
+    assert reply.content == "Kontekst jest kompletny." and not reply.tool_calls
+    assert [type(m) for m in calls[0]] == [SystemMessage, HumanMessage, AIMessage, ToolMessage]
+    assert calls[0][2:] == state["messages"]

@@ -6,8 +6,13 @@ Each node takes the graph state and returns a partial update of it.
 from collections.abc import Callable
 from typing import Literal
 
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.runnables import Runnable
+
 from legal_checker import legal_chunker
+from legal_checker.agent.prompts import RESEARCH_SYSTEM_PROMPT
 from legal_checker.agent.state import GraphState
+from legal_checker.agent.tools import format_unit
 from legal_checker.bm25_retriever import LateBoundBm25Index
 from legal_checker.eli_client import EliClient
 from legal_checker.eli_resolver import resolve_hint
@@ -78,6 +83,30 @@ def short_circuit_na(state: GraphState) -> dict:
         rationale=SHORT_CIRCUIT_RATIONALE,
     )
     return {"result": _post_validate(payload, state)}
+
+
+def make_research_node(research_model: Runnable) -> Node:
+    """The agent step: the model reviews the candidates and either calls tools or finishes.
+
+    ``messages`` holds only the research conversation (the model's ``AIMessage``s and the
+    ``ToolMessage``s answering them); the system prompt and the fragment with its candidates
+    are put in front of it on every call, so they are built from the state the same way each time.
+    """
+
+    def research(state: GraphState) -> dict:
+        prompt = [SystemMessage(RESEARCH_SYSTEM_PROMPT), HumanMessage(context_prompt(state))]
+        return {"messages": [research_model.invoke([*prompt, *state.get("messages", [])])]}
+
+    return research
+
+
+def context_prompt(state: GraphState) -> str:
+    """The fragment under review and the BM25 candidates, in the tagged sections the prompts refer to."""
+    provisions = "\n\n".join(format_unit(unit) for unit, _ in state["candidates"])
+    return (
+        f"<document_fragment>\n{state['request'].document_fragment}\n</document_fragment>\n\n"
+        f"<legal_provisions>\n{provisions}\n</legal_provisions>"
+    )
 
 
 def validate(state: GraphState) -> dict:
