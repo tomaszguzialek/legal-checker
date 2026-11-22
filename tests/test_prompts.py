@@ -27,6 +27,10 @@ def test_research_prompt_forbids_speculative_searches_and_allows_stopping_withou
     assert "zakończ bez wywołania narzędzi" in RESEARCH_SYSTEM_PROMPT
 
 
+def test_evaluation_prompt_refers_to_the_tagged_sections_of_the_user_message():
+    assert all(tag in EVALUATION_SYSTEM_PROMPT for tag in ["<document_fragment>", "<legal_provisions>", "<tool_results>"])
+
+
 def test_evaluation_prompt_names_every_status_exactly_as_the_schema_does():
     assert all(f"„{status.value}”" in EVALUATION_SYSTEM_PROMPT for status in ComplianceStatus)
 

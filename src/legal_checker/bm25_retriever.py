@@ -134,3 +134,31 @@ class InMemoryBm25Index:
 def _normalize_number(number: str) -> str:
     """Unit number as the chunker writes it: "Art. 27 a" -> "27a"."""
     return re.sub(r"^(?:art\.|ust\.|§)|\s+", "", number.strip(), flags=re.IGNORECASE)
+
+
+class LateBoundBm25Index:
+    """A request's index, built once the act's units are known.
+
+    The agent tools and the research model are created before the graph runs, but the act's
+    units only come out of its ``chunk_act`` node: the ``retrieve`` node builds the index here,
+    and the tools look it up when called.
+    """
+
+    def __init__(self) -> None:
+        self._index: InMemoryBm25Index | None = None
+
+    def build(self, units: list[LegalUnit]) -> InMemoryBm25Index:
+        self._index = InMemoryBm25Index(units)
+        return self._index
+
+    @property
+    def index(self) -> InMemoryBm25Index:
+        if self._index is None:
+            raise RuntimeError("The BM25 index is not built yet: the graph has not reached its retrieve node")
+        return self._index
+
+    def search(self, query: str, top_k: int = 12) -> list[tuple[LegalUnit, float]]:
+        return self.index.search(query, top_k=top_k)
+
+    def get(self, article: str, paragraph: str | None = None) -> LegalUnit | None:
+        return self.index.get(article, paragraph)

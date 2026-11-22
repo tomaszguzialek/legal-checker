@@ -2,7 +2,7 @@
 
 from langchain_core.tools import BaseTool, tool
 
-from legal_checker.bm25_retriever import InMemoryBm25Index
+from legal_checker.bm25_retriever import InMemoryBm25Index, LateBoundBm25Index
 from legal_checker.models import LegalUnit
 
 # Upper bound on one tool result's text (~2.5k tokens): a few full articles, not half the act.
@@ -13,7 +13,7 @@ _CUT_MARK = " […]"
 _SEPARATOR = "\n\n"
 
 
-def make_tools(index: InMemoryBm25Index) -> list[BaseTool]:
+def make_tools(index: InMemoryBm25Index | LateBoundBm25Index) -> list[BaseTool]:
     """Tools bound to one request's index, so no state is shared between checks.
 
     Each returns ``(content, artifact)``: the provisions' text for the LLM and their
@@ -54,6 +54,11 @@ def make_tools(index: InMemoryBm25Index) -> list[BaseTool]:
     return [search_provisions, get_provision]
 
 
+def format_unit(unit: LegalUnit) -> str:
+    """A provision as the LLM sees it: a ``[unit_id] hierarchy_path`` header line, then its text."""
+    return f"[{unit.unit_id}] {' > '.join(unit.hierarchy_path)}\n{unit.text}"
+
+
 def _result(units: list[LegalUnit], empty_message: str) -> tuple[str, list[str]]:
     """Provisions as ``[unit_id] hierarchy_path`` blocks, cut to ``MAX_CONTENT_CHARS``.
 
@@ -65,7 +70,7 @@ def _result(units: list[LegalUnit], empty_message: str) -> tuple[str, list[str]]
     shown: list[str] = []
     remaining = MAX_CONTENT_CHARS
     for unit in units:
-        block = f"[{unit.unit_id}] {' > '.join(unit.hierarchy_path)}\n{unit.text}"
+        block = format_unit(unit)
         if len(block) > remaining:
             if remaining >= _MIN_CUT_BLOCK_CHARS:
                 blocks.append(block[:remaining].rstrip() + _CUT_MARK)
