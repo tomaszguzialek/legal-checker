@@ -1,6 +1,10 @@
+import time
+from pathlib import Path
+
 import pytest
 
 from legal_checker.bm25_retriever import InMemoryBm25Index, stem, tokenize
+from legal_checker.legal_chunker import chunk_act
 from legal_checker.models import LegalUnit
 
 
@@ -146,3 +150,50 @@ def test_get_returns_a_paragraph_or_the_whole_split_article():
 def test_get_returns_an_article_kept_whole_for_any_of_its_paragraphs():
     assert InMemoryBm25Index(ACT).get("27", "1").unit_id == "DU/2014/827:art.27"
 
+
+# Full text of the consumer rights act (DU/2014/827), extracted with the project's own pipeline
+# from its unified-text PDF.
+FULL_ACT = InMemoryBm25Index(
+    chunk_act("DU/2014/827", (Path(__file__).parent / "fixtures" / "acts" / "DU_2014_827.txt").read_text()).units
+)
+# Sample clauses of an online shop's terms and conditions, each with the provision it must be checked against.
+CLAUSES = [
+    (
+        "Klient może odstąpić od umowy zawartej przez Internet w terminie 7 dni od dnia otrzymania towaru, "
+        "bez podania przyczyny.",
+        "art.27",
+    ),
+    (
+        "Sprzedawca zwróci Klientowi wpłacone środki w terminie 30 dni od dnia otrzymania oświadczenia "
+        "o odstąpieniu od umowy.",
+        "art.32",
+    ),
+    ("W przypadku odstąpienia od umowy koszty odesłania towaru do Sprzedawcy ponosi Klient.", "art.34"),
+    (
+        "Prawo odstąpienia od umowy nie przysługuje w odniesieniu do towarów wyprodukowanych według "
+        "specyfikacji Klienta.",
+        "art.38.ust.1",
+    ),
+    ("W razie niezgodności towaru z umową Klient może żądać naprawy lub wymiany towaru.", "art.43d"),
+    ("Klient zrzeka się wszelkich praw przysługujących mu na podstawie ustawy.", "art.7"),
+    (
+        "Dostarczana treść cyfrowa podlega aktualizacjom, które Sprzedawca może wprowadzać według własnego uznania.",
+        "art.43p",
+    ),
+]
+
+
+@pytest.mark.parametrize(("clause", "provision"), CLAUSES, ids=[provision for _, provision in CLAUSES])
+def test_search_finds_the_provision_for_a_contract_clause_in_the_top_5(clause, provision):
+    top_5 = [u.unit_id for u, _ in FULL_ACT.search(clause)[:5]]
+
+    assert f"DU/2014/827:{provision}" in top_5
+
+
+def test_search_over_the_full_act_takes_under_50_ms():
+    start = time.perf_counter()
+    for clause, _ in CLAUSES:
+        FULL_ACT.search(clause)
+    elapsed_ms = (time.perf_counter() - start) * 1000 / len(CLAUSES)
+
+    assert elapsed_ms < 50
