@@ -55,7 +55,7 @@ Zbudowanie działającego od końca do końca (*end-to-end*) narzędzia CLI / le
 * **Klient LLM:** `langchain>=1.0` — `init_chat_model("provider:model")` jako jedyny punkt wyboru modelu (podmiana dostawcy wyłącznie przez `.env`, bez własnego adaptera). Integracje dostawców jako opcjonalne zależności: `langchain-anthropic`, `langchain-openai`, `langchain-google-genai`. Structured Outputs przez `model.with_structured_output(LlmEvaluationPayload, method="json_schema", include_raw=True)`.
 * **Obserwowalność (opcjonalnie):** LangSmith — śledzenie przebiegu grafu włączane zmiennymi `LANGSMITH_TRACING` / `LANGSMITH_API_KEY`, bez zmian w kodzie.
 * **Testy:** `pytest` + `pytest-asyncio` + `respx` (do mockowania zapytań HTTP) + fałszywe modele z `langchain_core` (`GenericFakeChatModel`) do deterministycznych testów grafu bez wywołań API.
-* **CI/CD:** GitHub Actions (`.github/workflows/ci.yml`) — `uv sync --locked` + `uv run pytest` przy każdym pushu na `main` i w każdym pull requeście; bez anulowania trwających buildów, tak aby każdy commit miał własny przebieg. Testy `live` są w CI pomijane (brak klucza API).
+* **CI/CD:** GitHub Actions (`.github/workflows/ci.yml`) — `uv sync --locked` + `uv run pytest` przy każdym pushu na `main` i w każdym pull requeście; bez anulowania trwających buildów, tak aby każdy commit miał własny przebieg. Testy oznaczone `@pytest.mark.live` (prawdziwe API ELI Sejmu lub dostawca LLM) są domyślnie wyłączone (`addopts = "-m 'not live'"` w `pyproject.toml`), więc nie uruchamiają się w CI; uruchamia się je ręcznie przez `uv run pytest -m live`. Pozostałe testy działają bez sieci (HTTP mockowane przez `respx` na zarezerwowanym hoście `eli-api.test`).
 
 ### 2.2 Docelowa struktura katalogów
 ```text

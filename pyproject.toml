@@ -38,5 +38,8 @@ packages = ["src/legal_checker"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Tests against real external services are opt-in: uv run pytest -m live
+addopts = "-m 'not live'"
+markers = ["live: calls real external services (Sejm ELI API, LLM provider); deselected by default"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
