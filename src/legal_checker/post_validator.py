@@ -1,6 +1,7 @@
 """Deterministic post-validation of the LLM assessment (SPEC Task 4.4)."""
 
 import re
+from datetime import date
 
 from langchain_core.messages import AnyMessage, ToolMessage
 
@@ -79,6 +80,9 @@ def post_validate(
 ) -> ComplianceResult:
     """The final result: the LLM's assessment with source metadata attached by code.
 
+    The act's title, ELI and source URL, the consulted units and the date of the assessment
+    (``as_of_date``, today) come from code, never from the LLM.
+
     A ``document_excerpt`` not found verbatim in ``document_fragment`` adds a warning and lowers the confidence.
     A ``matched_provision`` whose article is not among the consulted units adds a warning.
     """
@@ -99,7 +103,7 @@ def post_validate(
             act_title=act.title,
             eli=act.eli,
             provision=payload.matched_provision,
-            as_of_date=act.as_of_date,
+            as_of_date=date.today().isoformat(),
             source_url=act.source_url,
         ),
         rationale=payload.rationale,
