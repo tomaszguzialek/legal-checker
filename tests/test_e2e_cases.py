@@ -2,20 +2,26 @@
 
 Six scenarios covering every assessment category and the edge cases. By default each one runs
 the whole graph on the cached consumer rights act and fake models, verifying the path through
-the graph rather than the content of the assessment.
+the graph rather than the content of the assessment. The ``live`` variants run them against the
+real ELI API and LLM and check the assessment itself.
 """
 
+import os
 from dataclasses import dataclass
+from functools import partial
 
 import pytest
 import respx
 from langchain_core.language_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
+from langchain_core.rate_limiters import InMemoryRateLimiter
 from langchain_core.runnables import RunnableLambda
 
 from legal_checker.agent import graph as graph_module
+from legal_checker.agent import llm as llm_module
+from legal_checker.agent.graph import check
 from legal_checker.config import Settings
-from legal_checker.models import CheckRequest, ComplianceStatus, LlmEvaluationPayload
+from legal_checker.models import CheckRequest, ComplianceResult, ComplianceStatus, LlmEvaluationPayload
 
 from conftest import ELI_TEST_URL
 
@@ -190,3 +196,74 @@ def test_every_hint_format_resolves_to_the_same_act(hint, cached_act, title_sear
     assert state["eli_ref"].key == "DU/2014/827"
     assert state["result"].legal_basis.eli == "DU/2014/827"
     assert title_search.called == (hint == HINT_FORMATS["tytul"])
+
+
+# Live mode: the real Sejm ELI API and the LLM from LLM_MODEL. Run with: uv run pytest -m live
+
+# API key variable of each provider prefix of LLM_MODEL ("provider:model").
+PROVIDER_API_KEYS = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "google_genai": "GOOGLE_API_KEY",
+    "groq": "GROQ_API_KEY",
+}
+
+
+# Groq's free tier allows 8K tokens per minute. With all 12 BM25 hits (plus the articles they refer to)
+# one request takes up to ~13K tokens; with 3 hits at most ~6K, so one LLM call a minute stays within it.
+GROQ_FREE_TIER_TOP_K = 3
+GROQ_FREE_TIER_RATE_LIMITER = InMemoryRateLimiter(requests_per_second=1 / 60, max_bucket_size=1)
+
+
+def provider(settings: Settings) -> str:
+    return settings.llm_model.split(":", 1)[0]
+
+
+@pytest.fixture(scope="module")
+def live_settings(tmp_path_factory) -> Settings:
+    """Settings from the environment (and ``.env``), with an act cache shared by the live cases.
+
+    Skips the test when the API key of the configured provider is not set. On Groq, the request
+    is made smaller (``GROQ_FREE_TIER_TOP_K``) to fit the free tier.
+    """
+    settings = Settings.from_env()
+    key = PROVIDER_API_KEYS.get(provider(settings))
+    if key is None or not os.environ.get(key):
+        pytest.skip(f"No API key for the LLM provider of {settings.llm_model!r} ({key or 'unknown provider'})")
+    update = {"cache_dir": tmp_path_factory.mktemp("live-cache")}
+    if provider(settings) == "groq":
+        update["bm25_top_k"] = min(settings.bm25_top_k, GROQ_FREE_TIER_TOP_K)
+    return settings.model_copy(update=update)
+
+
+@pytest.fixture
+def live_check(live_settings, monkeypatch):
+    """``check`` on the live settings; on Groq, every LLM call of the module waits for the shared rate limiter."""
+    if provider(live_settings) == "groq":
+        rate_limited = partial(llm_module.init_chat_model, rate_limiter=GROQ_FREE_TIER_RATE_LIMITER)
+        monkeypatch.setattr(llm_module, "init_chat_model", rate_limited)
+    return lambda fragment, hint: check(CheckRequest(document_fragment=fragment, act_hint=hint), live_settings)
+
+
+def assert_assessment(case: Case, result: ComplianceResult) -> None:
+    assert result.legal_basis.eli == "DU/2014/827"
+    if case.expected_status is not None:
+        assert result.status == case.expected_status, result.rationale
+    assert result.confidence <= case.max_confidence, result.rationale
+    assert result.rationale
+
+
+@pytest.mark.live
+@pytest.mark.parametrize("case", CATEGORY_CASES, ids=lambda case: case.id)
+def test_live_case_is_assessed_as_expected(case, live_check):
+    result = live_check(case.fragment, case.hint)
+
+    assert_assessment(case, result)
+
+
+@pytest.mark.live
+@pytest.mark.parametrize("hint", HINT_FORMATS.values(), ids=HINT_FORMATS.keys())
+def test_live_every_hint_format_gives_the_same_assessment(hint, live_check):
+    result = live_check(COMPLIANT.fragment, hint)
+
+    assert_assessment(COMPLIANT, result)
