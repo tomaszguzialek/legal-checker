@@ -44,9 +44,9 @@ No API key is needed. The Ollama server must run with a context window that fits
 
 ```sh
 uv sync --extra ollama
-ollama pull qwen3:30b
+ollama pull gpt-oss:20b
 OLLAMA_CONTEXT_LENGTH=32768 ollama serve
-# in .env: LLM_MODEL=ollama:qwen3:30b
+# in .env: LLM_MODEL=ollama:gpt-oss:20b
 ```
 
 ## Usage
