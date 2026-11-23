@@ -25,6 +25,7 @@ anthropic = ["langchain-anthropic"]
 openai = ["langchain-openai"]
 google = ["langchain-google-genai"]
 groq = ["langchain-groq"]
+ollama = ["langchain-ollama"]
 
 [dependency-groups]
 dev = [
