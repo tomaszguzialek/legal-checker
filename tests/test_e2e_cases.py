@@ -216,6 +216,8 @@ PROVIDER_API_KEYS = {
 # Groq's free tier allows 8K tokens per minute. With all 12 BM25 hits (plus the articles they refer to)
 # one request takes up to ~13K tokens; with 3 hits at most ~6K, so one LLM call a minute stays within it.
 GROQ_FREE_TIER_TOP_K = 3
+# Every provision the agent fetches stays in the conversation, so the request grows with each tool call.
+GROQ_FREE_TIER_MAX_TOOL_CALLS = 2
 GROQ_FREE_TIER_RATE_LIMITER = InMemoryRateLimiter(requests_per_second=1 / 60, max_bucket_size=1)
 
 
@@ -228,7 +230,7 @@ def live_settings(tmp_path_factory) -> Settings:
     """Settings from the environment (and ``.env``), with an act cache shared by the live cases.
 
     Skips the test when the API key of the configured provider is not set. On Groq, the request
-    is made smaller (``GROQ_FREE_TIER_TOP_K``) to fit the free tier.
+    is made smaller (``GROQ_FREE_TIER_TOP_K``, ``GROQ_FREE_TIER_MAX_TOOL_CALLS``) to fit the free tier.
     """
     settings = Settings.from_env()
     key = PROVIDER_API_KEYS.get(provider(settings))
@@ -237,6 +239,7 @@ def live_settings(tmp_path_factory) -> Settings:
     update = {"cache_dir": tmp_path_factory.mktemp("live-cache")}
     if provider(settings) == "groq":
         update["bm25_top_k"] = min(settings.bm25_top_k, GROQ_FREE_TIER_TOP_K)
+        update["agent_max_tool_calls"] = min(settings.agent_max_tool_calls, GROQ_FREE_TIER_MAX_TOOL_CALLS)
     return settings.model_copy(update=update)
 
 
