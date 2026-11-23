@@ -220,6 +220,9 @@ PROVIDER_API_KEYS = {
     "google_genai": "GOOGLE_API_KEY",
     "groq": "GROQ_API_KEY",
 }
+# Providers running on this machine, which need no API key. Ollama must be started with a context
+# window that fits the full request (~13K tokens): OLLAMA_CONTEXT_LENGTH=32768 ollama serve
+LOCAL_PROVIDERS = {"ollama"}
 
 
 # Groq's free tier allows 8K tokens per minute. With all 12 BM25 hits (plus the articles they refer to)
@@ -238,12 +241,13 @@ def provider(settings: Settings) -> str:
 def live_settings(tmp_path_factory) -> Settings:
     """Settings from the environment (and ``.env``), with an act cache shared by the live cases.
 
-    Skips the test when the API key of the configured provider is not set. On Groq, the request
-    is made smaller (``GROQ_FREE_TIER_TOP_K``, ``GROQ_FREE_TIER_MAX_TOOL_CALLS``) to fit the free tier.
+    Skips the test when the API key of the configured provider is not set (local providers need none).
+    On Groq, the request is made smaller (``GROQ_FREE_TIER_TOP_K``, ``GROQ_FREE_TIER_MAX_TOOL_CALLS``)
+    to fit the free tier.
     """
     settings = Settings.from_env()
     key = PROVIDER_API_KEYS.get(provider(settings))
-    if key is None or not os.environ.get(key):
+    if provider(settings) not in LOCAL_PROVIDERS and (key is None or not os.environ.get(key)):
         pytest.skip(f"No API key for the LLM provider of {settings.llm_model!r} ({key or 'unknown provider'})")
     update = {"cache_dir": tmp_path_factory.mktemp("live-cache")}
     if provider(settings) == "groq":
