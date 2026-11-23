@@ -11,7 +11,7 @@ from legal_checker.models import CheckRequest, ComplianceStatus, EliRef, LlmEval
 def test_llm_payload_json_schema():
     schema = LlmEvaluationPayload.model_json_schema()
 
-    assert set(schema["required"]) == {"status", "confidence", "rationale"}
+    assert set(schema["required"]) == {"status", "applicability_unclear", "confidence", "rationale"}
     status_enum = schema["$defs"]["ComplianceStatus"]["enum"]
     assert status_enum == [s.value for s in ComplianceStatus]
     assert schema["properties"]["confidence"]["minimum"] == 0.0
@@ -20,7 +20,7 @@ def test_llm_payload_json_schema():
 
 def test_llm_payload_rejects_out_of_range_confidence():
     with pytest.raises(ValidationError):
-        LlmEvaluationPayload(status="ZGODNY", confidence=1.5, rationale="x")
+        LlmEvaluationPayload(status="ZGODNY", applicability_unclear=False, confidence=1.5, rationale="x")
 
 
 def test_check_request_min_lengths():

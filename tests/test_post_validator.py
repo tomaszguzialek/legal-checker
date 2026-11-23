@@ -8,6 +8,8 @@ from legal_checker.models import ActDocument, ComplianceStatus, LegalUnit, LlmEv
 from legal_checker.post_validator import (
     PARAPHRASED_EXCERPT_CONFIDENCE_FACTOR,
     PARAPHRASED_EXCERPT_WARNING,
+    UNCLEAR_APPLICABILITY_MAX_CONFIDENCE,
+    UNCLEAR_APPLICABILITY_WARNING,
     UNCONSULTED_PROVISION_WARNING,
     consulted_units,
     excerpt_is_verbatim,
@@ -40,6 +42,7 @@ CANDIDATES = [(unit("DU/2014/827:art.27"), 4.2), (unit("DU/2014/827:art.38.ust.1
 def payload(**fields) -> LlmEvaluationPayload:
     defaults = {
         "status": ComplianceStatus.COMPLIANT,
+        "applicability_unclear": False,
         "confidence": 0.8,
         "document_excerpt": "w terminie 14 dni bez podania przyczyny",
         "matched_provision": "art. 27",
@@ -113,6 +116,38 @@ def test_missing_excerpt_is_not_checked():
 
     assert result.confidence == 0.8
     assert result.warnings == []
+
+
+# Unclear applicability to the parties
+
+CAPPED_WARNING = UNCLEAR_APPLICABILITY_WARNING.format(cap=UNCLEAR_APPLICABILITY_MAX_CONFIDENCE)
+
+
+@pytest.mark.parametrize("status", list(ComplianceStatus))
+def test_unclear_applicability_caps_the_confidence_of_every_status(status):
+    result = run(payload(status=status, applicability_unclear=True, confidence=0.95))
+
+    assert result.confidence == UNCLEAR_APPLICABILITY_MAX_CONFIDENCE
+    assert result.warnings == [CAPPED_WARNING]
+
+
+@pytest.mark.parametrize("confidence", [0.4, UNCLEAR_APPLICABILITY_MAX_CONFIDENCE])
+def test_unclear_applicability_keeps_a_confidence_within_the_cap_without_a_warning(confidence):
+    result = run(payload(applicability_unclear=True, confidence=confidence))
+
+    assert result.confidence == confidence
+    assert result.warnings == []
+
+
+def test_clear_applicability_keeps_a_high_confidence():
+    assert run(payload(confidence=0.95)).confidence == 0.95
+
+
+def test_paraphrased_excerpt_lowers_the_capped_confidence_further():
+    result = run(payload(applicability_unclear=True, confidence=0.95, document_excerpt="termin 7 dni"))
+
+    assert result.confidence == pytest.approx(UNCLEAR_APPLICABILITY_MAX_CONFIDENCE * PARAPHRASED_EXCERPT_CONFIDENCE_FACTOR)
+    assert result.warnings == [CAPPED_WARNING, PARAPHRASED_EXCERPT_WARNING]
 
 
 # Consulted units and the provision check (4.4.2)

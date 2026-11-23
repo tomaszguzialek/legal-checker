@@ -57,6 +57,10 @@ class LlmEvaluationPayload(BaseModel):
     """Fields the LLM fills in; enforced via JSON Schema structured output."""
 
     status: ComplianceStatus
+    applicability_unclear: bool = Field(
+        ...,
+        description="Czy z fragmentu nie wynika, czy akt w ogóle ma zastosowanie do stron (np. konsument czy przedsiębiorca)",
+    )
     confidence: float = Field(..., ge=0.0, le=1.0)
     document_excerpt: str | None = Field(
         None,

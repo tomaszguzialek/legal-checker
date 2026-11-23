@@ -97,6 +97,7 @@ def route_after_retrieve(state: GraphState) -> Literal["short_circuit_na", "rese
 def short_circuit_na(state: GraphState) -> dict:
     payload = LlmEvaluationPayload(
         status=ComplianceStatus.NOT_APPLICABLE,
+        applicability_unclear=False,
         confidence=SHORT_CIRCUIT_CONFIDENCE,
         rationale=SHORT_CIRCUIT_RATIONALE,
     )

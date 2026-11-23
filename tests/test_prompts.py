@@ -36,7 +36,14 @@ def test_evaluation_prompt_names_every_status_exactly_as_the_schema_does():
 
 
 def test_evaluation_prompt_names_only_fields_of_the_payload():
-    fields = ["document_excerpt", "rationale", "matched_provision", "confidence", "suggested_fix"]
+    fields = [
+        "document_excerpt",
+        "rationale",
+        "matched_provision",
+        "applicability_unclear",
+        "confidence",
+        "suggested_fix",
+    ]
 
     assert set(fields) <= set(LlmEvaluationPayload.model_fields)
     assert all(field in EVALUATION_SYSTEM_PROMPT for field in fields)

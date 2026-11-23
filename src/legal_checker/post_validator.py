@@ -12,6 +12,9 @@ PARAPHRASED_EXCERPT_WARNING = (
 )
 # A quote the model did not copy verbatim makes the whole assessment less trustworthy.
 PARAPHRASED_EXCERPT_CONFIDENCE_FACTOR = 0.5
+UNCLEAR_APPLICABILITY_WARNING = "Nie wiadomo, czy akt ma zastosowanie do stron — pewność ograniczona do {cap:.1f}"
+# The highest confidence of an assessment that may rest on an act which does not apply to the parties.
+UNCLEAR_APPLICABILITY_MAX_CONFIDENCE = 0.7
 UNCONSULTED_PROVISION_WARNING = "Wskazany przepis „{provision}” nie należy do przepisów widzianych przez agenta"
 
 # Unit numbers as the chunker writes them: "27", "43a", "449^1".
@@ -83,11 +86,16 @@ def post_validate(
     The act's title, ELI and source URL, the consulted units and the date of the assessment
     (``as_of_date``, today) come from code, never from the LLM.
 
+    When the LLM flags that it is unclear whether the act applies to the parties, the confidence is capped
+    at ``UNCLEAR_APPLICABILITY_MAX_CONFIDENCE``; if that lowers it, a warning is added.
     A ``document_excerpt`` not found verbatim in ``document_fragment`` adds a warning and lowers the confidence.
     A ``matched_provision`` whose article is not among the consulted units adds a warning.
     """
     confidence = payload.confidence
     warnings = list(warnings)
+    if payload.applicability_unclear and confidence > UNCLEAR_APPLICABILITY_MAX_CONFIDENCE:
+        warnings.append(UNCLEAR_APPLICABILITY_WARNING.format(cap=UNCLEAR_APPLICABILITY_MAX_CONFIDENCE))
+        confidence = UNCLEAR_APPLICABILITY_MAX_CONFIDENCE
     if payload.document_excerpt is not None and not excerpt_is_verbatim(payload.document_excerpt, document_fragment):
         warnings.append(PARAPHRASED_EXCERPT_WARNING)
         confidence *= PARAPHRASED_EXCERPT_CONFIDENCE_FACTOR
