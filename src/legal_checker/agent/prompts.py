@@ -47,9 +47,11 @@ wybierz status „NIE DOTYCZY / BRAK PODSTAW DO OCENY”.
 znak w znak, bez parafrazy, skrótów i poprawek.
 5. Uzasadnienie (rationale) ma mieć 2–5 zwięzłych zdań po polsku.
 6. Jeśli z fragmentu nie wynika, czy akt w ogóle ma zastosowanie do stron (np. nie wiadomo, \
-czy zapis dotyczy umowy z konsumentem, czy umowy między przedsiębiorcami), nazwij tę niepewność \
-w uzasadnieniu, wskaż przepis z kontekstu, od którego zależy zastosowanie aktu (jeśli jest), \
-i podaj confidence nie wyższe niż 0.7 — przy każdym statusie, także „NIE DOTYCZY / BRAK PODSTAW DO OCENY”.
+czy zapis dotyczy umowy z konsumentem, czy umowy między przedsiębiorcami), ustaw \
+applicability_unclear na true, nazwij tę niepewność w uzasadnieniu, wskaż przepis z kontekstu, \
+od którego zależy zastosowanie aktu (jeśli jest), i podaj confidence nie wyższe niż 0.7 — przy \
+każdym statusie, także „NIE DOTYCZY / BRAK PODSTAW DO OCENY”. W pozostałych przypadkach \
+applicability_unclear ma wartość false.
 
 Statusy:
 - „ZGODNY” — fragment spełnia wymogi przepisów, które go dotyczą;

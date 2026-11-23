@@ -22,6 +22,7 @@ from legal_checker.agent import llm as llm_module
 from legal_checker.agent.graph import check
 from legal_checker.config import Settings
 from legal_checker.models import CheckRequest, ComplianceResult, ComplianceStatus, LlmEvaluationPayload
+from legal_checker.post_validator import UNCLEAR_APPLICABILITY_MAX_CONFIDENCE, UNCLEAR_APPLICABILITY_WARNING
 
 from conftest import ELI_TEST_URL
 
@@ -33,6 +34,7 @@ class Case:
     hint: str
     expected_status: ComplianceStatus | None  # None: any status, the case is about how sure the model is
     provision: str | None  # the article the assessment hinges on; None when the act does not apply
+    applicability_unclear: bool = False  # whether the act applies to the parties is left open
     max_confidence: float = 1.0
     groq_top_k: int | None = None  # BM25 hits on Groq's free tier, where more than GROQ_FREE_TIER_TOP_K fit
 
@@ -93,7 +95,8 @@ AMBIGUOUS = Case(
     hint=WITHDRAWAL_SIGNATURE,
     expected_status=None,
     provision="27",
-    max_confidence=0.7,
+    applicability_unclear=True,
+    max_confidence=UNCLEAR_APPLICABILITY_MAX_CONFIDENCE,
     # 5 hits (~2.5K tokens) include art. 7aa, which extends consumer rights to some sole traders, and leave
     # room for the provisions the agent fetches; the 6th hit, the definitions of art. 2, alone adds ~1.8K.
     groq_top_k=5,
@@ -133,10 +136,14 @@ ACT_NODES = ["resolve_act", "fetch_act", "chunk_act", "retrieve"]
 
 
 def fake_payload(case: Case) -> LlmEvaluationPayload:
-    """A canned assessment in the case's category; the fake run checks the graph, not this content."""
+    """A canned assessment in the case's category; the fake run checks the graph, not this content.
+
+    The confidence is always 0.9, so the post-validator has to cap it where the case allows less.
+    """
     return LlmEvaluationPayload(
         status=case.expected_status or ComplianceStatus.PARTIALLY_COMPLIANT,
-        confidence=min(0.9, case.max_confidence),
+        applicability_unclear=case.applicability_unclear,
+        confidence=0.9,
         document_excerpt=case.fragment.split(".")[0] if case.provision else None,
         matched_provision=f"art. {case.provision}" if case.provision else None,
         rationale="Ocena testowa.",
@@ -189,7 +196,9 @@ def test_case_runs_through_research_and_evaluation(case, cached_act, title_searc
     assert result.legal_basis.source_url == cached_act.content.url
     if case.provision:
         assert f"DU/2014/827:art.{case.provision}" in result.consulted_units
-    assert result.warnings == ["Ostrzeżenie ekstrakcji"]
+    assert result.confidence <= case.max_confidence
+    capped = [UNCLEAR_APPLICABILITY_WARNING.format(cap=UNCLEAR_APPLICABILITY_MAX_CONFIDENCE)]
+    assert result.warnings == ["Ostrzeżenie ekstrakcji", *(capped if case.applicability_unclear else [])]
 
 
 @pytest.mark.parametrize("hint", HINT_FORMATS.values(), ids=HINT_FORMATS.keys())

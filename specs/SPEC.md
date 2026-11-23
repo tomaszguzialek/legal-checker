@@ -133,6 +133,10 @@ class ComplianceStatus(str, Enum):
 
 class LlmEvaluationPayload(BaseModel):
     status: ComplianceStatus
+    applicability_unclear: bool = Field(
+        ...,
+        description="Czy z fragmentu nie wynika, czy akt w ogóle ma zastosowanie do stron (np. konsument czy przedsiębiorca)"
+    )
     confidence: float = Field(..., ge=0.0, le=1.0)
     document_excerpt: str | None = Field(
         None,
@@ -294,6 +298,7 @@ Realizuj zadania **etapowo**, po każdym tasku uruchamiając testy jednostkowe i
 * [ ] **Subtask 4.4.2:** Wylicz `consulted_units` = `unit_id` kandydatów BM25 ∪ artefakty wszystkich `ToolMessage` ze stanu. Zweryfikuj, czy wskazany `matched_provision` (numer artykułu) należy do `consulted_units`. Jeśli nie — oznacz ostrzeżenie w `warnings` (przepis spoza kontekstu widzianego przez agenta).
 * [ ] **Subtask 4.4.3:** Złóż finalny obiekt `ComplianceResult`, wstrzykując deterministycznie z kodu `act_title`, `eli`, `source_url`, `consulted_units` oraz `as_of_date = date.today().isoformat()`.
 * [ ] **Subtask 4.4.4:** Napisz testy jednostkowe w `tests/test_post_validator.py` (m.in. dla wykrywania zmyślonego cytatu oraz przepisu spoza `consulted_units`).
+* [ ] **Subtask 4.4.5:** Jeśli LLM ustawił `applicability_unclear` (nie wiadomo, czy akt ma zastosowanie do stron, np. B2B czy B2C), ogranicz `confidence` do 0.7 niezależnie od statusu; gdy ograniczenie obniża pewność, dodaj ostrzeżenie do `warnings`.
 * **DoD:** Post-validator deterministycznie dokleja metadane źródłowe i wyłapuje rozbieżności w cytatach i przepisach bez udziału LLM.
 
 ---

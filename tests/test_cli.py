@@ -17,6 +17,7 @@ from conftest import ELI_TEST_URL
 WITHDRAWAL = "Klient może odstąpić od umowy zawartej na odległość w terminie 14 dni bez podania przyczyny."
 PAYLOAD = LlmEvaluationPayload(
     status=ComplianceStatus.COMPLIANT,
+    applicability_unclear=False,
     confidence=0.9,
     document_excerpt="w terminie 14 dni",
     matched_provision="art. 27",

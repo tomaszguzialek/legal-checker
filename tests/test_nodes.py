@@ -101,6 +101,7 @@ def test_validate_attaches_metadata_and_everything_the_agent_saw(eli, cached_act
     ]
     state["llm_payload"] = LlmEvaluationPayload(
         status=ComplianceStatus.COMPLIANT,
+        applicability_unclear=False,
         confidence=0.85,
         document_excerpt="w terminie 14 dni",
         matched_provision="art. 27",
@@ -218,6 +219,7 @@ def test_tools_node_runs_calls_in_order_only_up_to_the_budget(eli):
 
 PAYLOAD = LlmEvaluationPayload(
     status=ComplianceStatus.COMPLIANT,
+    applicability_unclear=False,
     confidence=0.9,
     document_excerpt="w terminie 14 dni",
     matched_provision="art. 27",
